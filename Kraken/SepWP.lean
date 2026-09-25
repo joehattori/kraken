@@ -246,7 +246,7 @@ end MProp
 
 The frame is a pure memory assertion. It acts on an assertion of the program
 logic pointwise through the state-passing layers, and on the exit channel
-through one more layer; `EFrame.pointwise` composes the `PreservesSup`
+through one more layer; `FrameOp.pointwise` composes the `PreservesSup`
 instances along the way. -/
 
 namespace SepWP
@@ -255,11 +255,11 @@ namespace SepWP
 and flag layers. -/
 def frameOp : MProp 64 → (Reg64s → RegZmms → StatusFlags → MProp 64)
     → Reg64s → RegZmms → StatusFlags → MProp 64 :=
-  EFrame.pointwise (EFrame.pointwise (EFrame.pointwise MProp.sep))
+  FrameOp.pointwise (FrameOp.pointwise (FrameOp.pointwise MProp.sep))
 
 instance (F : MProp 64) : PreservesSup (frameOp F) :=
   inferInstanceAs (PreservesSup
-    (EFrame.pointwise (EFrame.pointwise (EFrame.pointwise MProp.sep)) F))
+    (FrameOp.pointwise (FrameOp.pointwise (FrameOp.pointwise MProp.sep)) F))
 
 @[simp, grind =] theorem frameOp_apply (F : MProp 64)
     (P : Reg64s → RegZmms → StatusFlags → MProp 64) (r : Reg64s) (z : RegZmms)
@@ -268,10 +268,10 @@ instance (F : MProp 64) : PreservesSup (frameOp F) :=
 /-- The exit-channel companion: the same frame, at every exit address. -/
 def frameOpE : MProp 64 → (Int64 → Reg64s → RegZmms → StatusFlags → MProp 64)
     → Int64 → Reg64s → RegZmms → StatusFlags → MProp 64 :=
-  EFrame.pointwise frameOp
+  FrameOp.pointwise frameOp
 
 instance (F : MProp 64) : PreservesSup (frameOpE F) :=
-  inferInstanceAs (PreservesSup (EFrame.pointwise frameOp F))
+  inferInstanceAs (PreservesSup (FrameOp.pointwise frameOp F))
 
 @[simp, grind =] theorem frameOpE_apply (F : MProp 64)
     (E : Int64 → Reg64s → RegZmms → StatusFlags → MProp 64) (a : Int64) (r : Reg64s)
@@ -298,7 +298,7 @@ channels over the machine-founded wp. -/
 noncomputable scoped instance instWP [CodeEnv] :
     WP Program Unit (Reg64s → RegZmms → StatusFlags → MProp 64)
       (Int64 → Reg64s → RegZmms → StatusFlags → MProp 64) :=
-  WP.of_frameClosure frameOp frameOpE base
+  WP.withFrameClosure frameOp base
 
 /-- Prove a separation triple: the machine-founded wp validates it under an
 arbitrary memory frame, held across the fall-through and across every exit. -/
@@ -311,7 +311,7 @@ theorem sep_intro [CodeEnv] {q : Program}
       cenv.wp q (fun s' => (F ∗ Q () s'.regs s'.zmms s'.status) s'.dmem)
         (fun a s' => (F ∗ E a s'.regs s'.zmms s'.status) s'.dmem) s) :
     ⦃ P ⦄ q ⦃ Q; E ⦄ := by
-  refine ⟨WP.le_wp_of_frameClosure_eq (base := base) rfl ?_⟩
+  refine ⟨WP.le_wp_of_withFrameClosure_eq (base := base) rfl ?_⟩
   intro F regs zmms flags mem hpre
   exact h F ⟨regs, zmms, flags, mem⟩ hpre
 
@@ -337,7 +337,7 @@ interpretation is a frame closure, and `∗` composes resources by `sep_assoc`.
 This is the fact the frame inference of `vcgen` discharges per spec
 application. -/
 theorem frames [CodeEnv] (q : Program) (F : MProp 64) :
-    (WP.wpTrans (self := instWP) q).Frames frameOp frameOpE F := by
+    @WP.Frames Program Unit _ _ _ _ instWP _ frameOp _ _ q F := by
   refine WP.frames_of_frameClosure frameOp MProp.sep ?_ ?_ ⟨fun q => (base.wpTrans q), fun _ => rfl⟩
   · intro r r' a
     funext regs zmms flags
@@ -377,8 +377,8 @@ where `vcgen` sequences them. -/
 /-- The frame fact of one directive, spelled with the exception companion
 `vcgen` derives for the exit channel. -/
 @[grind .] theorem frames_directive [CodeEnv] (d : Directive) (F : MProp 64) :
-    (WP.wpTrans d).Frames frameOp (EFrame.pointwise frameOp) F :=
-  frames [d] F
+    WP.Frames (Prog := Directive) frameOp d F :=
+  ⟨(frames [d] F).op_wp_le_wp_op⟩
 
 end SepWP
 

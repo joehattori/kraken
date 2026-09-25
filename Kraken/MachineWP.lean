@@ -189,6 +189,23 @@ def MachineData.retAddr (t : MachineData) : Option Int64 :=
     Mem.loadInt_storeInt _ _ _ _ hbound, Option.map_some,
     BitVec.ofInt_ofBytes_toBytes 64 8 rfl, Int64.ofBitVec_toBitVec]
 
+/-- The address a `(base,index,1)` operand computes, at 64-bit address size:
+the base register plus the index register. -/
+theorem AddrExpr.zeroExtend_interp_sib1 [Labels] (b i : Reg64) (regs : Reg64s)
+    (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W64)
+        (a := ⟨some (.reg b), some ⟨i, .W8⟩, .int64 0⟩) regs rng).zeroExtend 64)
+      = regs.get64 b + regs.get64 i := by
+  simp only [AddrExpr.interp, ConstExpr.interp, BitVec.toAddressSize]
+  have htake : ∀ x : BitVec 64, x.take Width.W64.bits = x := by
+    intro x
+    simp [BitVec.take, BitVec.extractLsb']
+  rw [htake, htake]
+  have hsigned : ∀ x : BitVec 64, x.signed = x.toInt := fun _ => rfl
+  rw [hsigned, hsigned]
+  show BitVec.ofInt 64 _ = _
+  simp [Width.bytes, BitVec.ofInt_add, BitVec.ofInt_toInt]
+
 section Specs
 
 open MachineWP
@@ -198,9 +215,10 @@ variable [CodeEnv] {Q : Unit → MachineData → Prop} {E : Int64 → MachineDat
 
 local macro "wp_step" : tactic =>
   `(tactic| simp only [Executable.stepAt, Directive.interp, Instr.interp,
-      Operation.interp, Operand.interp, RegOrMem.interp, RelRegOrMem.interp, ConstExpr.interp,
-      MachineData.set, MachineData.setReg, Reg64s.get_low64, Reg64s.set_low64, Effects.All,
-      or_false, false_or])
+      Operation.interp, AvxOperation.interp, Operand.interp, RegOrMem.interp,
+      AvxRegOrMem.interp, RelRegOrMem.interp, ConstExpr.interp,
+      MachineData.set, MachineData.setReg, MachineData.setAvxLegacy, MachineData.setAvxLegacyReg,
+      Reg64s.get_low64, Reg64s.set_low64, Effects.All, or_false, false_or])
 
 /-- Unfold the fall-through address past one instruction cell. -/
 private theorem after_instr {i : Instr} {q : Program} {pc : Int64} {z : Nat}
@@ -344,6 +362,140 @@ private theorem fallthrough_nondet_spec {α : Type} [NondetSupportingType α] {i
           (.xor (.reg (.low rd .W64)) (.regOrMem (.reg (.low rs .W64))))) :: p)
     ⦃ Q; E ⦄ :=
   fallthrough_nondet_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-! ### Register arithmetic and SSE
+
+`shl` leaves its flags partly undefined, so its rule quantifies over the
+flags; the rule covers nonzero counts only, the side condition vcgen emits. The
+packed-float rules carry the lane arithmetic as the value written. -/
+
+@[spec] theorem MachineWP.add_reg_reg_spec (asz : Width) (rd rs : Reg64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 rs
+        let b := s.regs.get64 rd
+        let v := a + b
+        WP.wp p Q E
+          { s with
+              regs := s.regs.set64 rd v,
+              status := StatusFlags.from_result v
+                { cf := v.unsigned != a.unsigned + b.unsigned,
+                  af := (v.take 4).unsigned != (a.take 4).unsigned + (b.take 4).unsigned,
+                  of := v.signed != a.signed + b.signed } } ⦄
+      (Directive.instr (.regular asz .W64
+          (.add (.reg (.low rd .W64)) (.regOrMem (.reg (.low rs .W64))))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.neg_reg_spec (asz : Width) (r : Reg64) :
+    ⦃ fun s =>
+        let b := s.regs.get64 r
+        let v := -b
+        WP.wp p Q E
+          { s with
+              regs := s.regs.set64 r v,
+              status := StatusFlags.from_result v
+                { cf := b != 0, af := (b.take 4) != 0, of := v.signed != - b.signed } } ⦄
+      (Directive.instr (.regular asz .W64 (.neg (.reg (.low r .W64)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `shl $i, %r32` for a nonzero masked count: the 32-bit result is
+zero-extended into `r`, and the flags are left arbitrary. The count is the
+immediate masked to five bits, spelled so that ground evaluation reduces it to
+a literal. -/
+@[spec] theorem MachineWP.shl_reg32_imm_spec (asz : Width) (r : Reg64) (i : Int64) :
+    ⦃ fun s =>
+        let a : BitVec 32 := s.regs.get (.low r .W32)
+        let n := i.toBitVec.toNat % 32
+        (n ≠ 0) ⊓ (∀ st : StatusFlags, WP.wp p Q E
+          { s with regs := s.regs.set64 r ((a <<< n).zeroExtend 64), status := st }) ⦄
+      (Directive.instr (.regular asz .W32 (.shl (.reg (.low r .W32)) (.imm8 (.int64 i)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hz, hk⟩ := h
+    have hn : ∀ (L : Labels) rng,
+        @ShiftCountExpr.interpMasked L (.imm8 (.int64 i)) s rng Width.W32
+          = i.toBitVec.toNat % 32 := fun _ _ => by
+      show (i.toBitVec.take 8).toNat &&& (2 ^ 5 - 1) = _
+      rw [BitVec.take, BitVec.extractLsb'_toNat, Nat.shiftRight_zero,
+        Nat.and_two_pow_sub_one_eq_mod, Nat.mod_mod_of_dvd _ (by decide)]
+    simp only [hn, hz, beq_iff_eq, ite_false]
+    repeat (first | exact hk _ _ hpl' | intro _ | split | simp only [Effects.All])
+
+@[spec] theorem MachineWP.movaps_reg_reg_spec (xd xs : RegMm) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := s.zmms.setLegacy (.xmm xd) (s.zmms.get (.xmm xs)) } ⦄
+      (Directive.instr (.avx .W64 .W128 (.movaps (.avx (.xmm xd)) (.avx (.xmm xs)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.subps_reg_reg_spec (xd xs : RegMm) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.setLegacy (.xmm xd)
+        (BitVec.packedBinOp 32 (fun d c => Float32.toBitVec (BitVec.toFloat32 d - BitVec.toFloat32 c))
+          (s.zmms.get (.xmm xd)) (s.zmms.get (.xmm xs)))) } ⦄
+      (Directive.instr (.avx .W64 .W128 (.subps (.avx (.xmm xd)) (.avx (.xmm xs)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.addps_reg_reg_spec (xd xs : RegMm) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.setLegacy (.xmm xd)
+        (BitVec.packedBinOp 32 (fun d c => Float32.toBitVec (BitVec.toFloat32 d + BitVec.toFloat32 c))
+          (s.zmms.get (.xmm xd)) (s.zmms.get (.xmm xs)))) } ⦄
+      (Directive.instr (.avx .W64 .W128 (.addps (.avx (.xmm xd)) (.avx (.xmm xs)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `movaps (%b,%i,1), %xmm` : the address must be 16-byte aligned and the 16
+bytes there readable; the tail runs with the loaded value in the register. -/
+@[spec] theorem MachineWP.movaps_load_sib1_spec (x : RegMm) (b i : Reg64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := s.zmms.setLegacy (.xmm x) (BitVec.ofInt 128 v) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.avx (.xmm x)) (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 0⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1, hal, hv, AvxWidth.bytes,
+      Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-- `movaps %xmm, (%b,%i,1)` : the address must be 16-byte aligned and the 16
+bytes there owned (readable); the tail runs on the updated memory. -/
+@[spec] theorem MachineWP.movaps_store_sib1_spec (x : RegMm) (b i : Reg64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 16 (s.zmms.get (.xmm x)).toInt } ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 0⟩) (.avx (.xmm x)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.storeAvx, AddrExpr.zeroExtend_interp_sib1, hal, hv, AvxWidth.bytes,
+      Bool.not_true, Bool.and_false]
+    exact hk _ hpl'
 
 @[spec] theorem MachineWP.jmp_label_spec (asz osz : Width) (l : Label) :
     ⦃ fun s => E ((_root_.Executable.labels cenv).label l) s ⦄
