@@ -58,6 +58,14 @@ def AddrExpr.interp64 (labels : Labels) (a : AddrExpr) (s : Reg64s) (p : Std.Rco
     (f : StatusFlags.from_result.Remaining) :
     (StatusFlags.from_result v f).zf = (v == BitVec.zero w) := rfl
 
+@[simp, grind =] theorem StatusFlags.sf_from_result {w} (v : BitVec w)
+    (f : StatusFlags.from_result.Remaining) :
+    (StatusFlags.from_result v f).sf = v.msb := rfl
+
+@[simp, grind =] theorem StatusFlags.of_from_result {w} (v : BitVec w)
+    (f : StatusFlags.from_result.Remaining) :
+    (StatusFlags.from_result v f).of = f.of := rfl
+
 /-! ## Condition-code reductions, one lemma per code -/
 
 @[simp, grind =] theorem CondCode.interp_z (s : StatusFlags) :
@@ -72,6 +80,10 @@ def AddrExpr.interp64 (labels : Labels) (a : AddrExpr) (s : Reg64s) (p : Std.Rco
     CondCode.a.interp s = (!s.cf && !s.zf) := rfl
 @[simp, grind =] theorem CondCode.interp_be (s : StatusFlags) :
     CondCode.be.interp s = (s.cf || s.zf) := rfl
+@[simp, grind =] theorem CondCode.interp_l (s : StatusFlags) :
+    CondCode.l.interp s = (s.sf != s.of) := rfl
+@[simp, grind =] theorem CondCode.interp_le (s : StatusFlags) :
+    CondCode.le.interp s = ((s.sf != s.of) || s.zf) := rfl
 
 /-! ## Reading a named register, one lemma per field -/
 
@@ -189,6 +201,13 @@ subtraction and a double-width product need once the result is known to fit. -/
 @[simp, grind =] theorem BitVec.ofInt_toInt_int64 (c : Int64) :
     BitVec.ofInt 64 c.toInt = c.toBitVec := by
   rw [show c.toInt = c.toBitVec.toInt from rfl, BitVec.ofInt_toInt]
+
+/-! ## Alignment
+
+An alignment check is a remainder of the address, which `grind` reads as
+arithmetic. -/
+
+attribute [grind =] isAligned
 
 /-! ## Per-register field reads over `set64`, one lemma per field -/
 
