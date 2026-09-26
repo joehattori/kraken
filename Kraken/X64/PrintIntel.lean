@@ -111,6 +111,7 @@ instance : ToString RelRegOrMem where toString rel := rel.toStr
 
 instance : ToString CondCode where toString
   | .z => "e" | .nz => "ne" | .c => "b" | .nc => "ae" | .a => "a" | .be => "be" | .l => "l" | .le => "le"
+  | .ge => "ge" | .g => "g"
 
 instance : ToString ShiftCountExpr where toString
   | .cl => "cl"
@@ -171,6 +172,17 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .subps dst src => s!"subps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .addps dst src => s!"addps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .xorps dst src => s!"xorps {dst.toStr addr_w}, {src.toStr addr_w}"
+  | .vmovaps dst src => s!"vmovaps {dst.toStr addr_w}, {src.toStr addr_w}"
+  | .vxorps dst src1 src2 => s!"vxorps {dst}, {src1}, {src2.toStr addr_w}"
+  | .vaddps dst src1 src2 => s!"vaddps {dst}, {src1}, {src2.toStr addr_w}"
+  | .vmulps dst src1 src2 => s!"vmulps {dst}, {src1}, {src2.toStr addr_w}"
+  | .vfmadd231ps dst src1 src2 => s!"vfmadd231ps {dst}, {src1}, {src2.toStr addr_w}"
+  | .vshufps dst src1 src2 imm => s!"vshufps {dst}, {src1}, {src2.toStr addr_w}, {imm}"
+  | .vextractf128 dst src imm => s!"vextractf128 {dst}, {src}, {imm}"
+  | .vmovhlps dst src1 src2 => s!"vmovhlps {dst}, {src1}, {src2}"
+  | .vmovss dst src1 src2 => s!"vmovss {dst}, {src1}, {src2}"
+  | .vaddss dst src1 src2 => s!"vaddss {dst}, {src1}, {src2}"
+  | .vzeroupper => "vzeroupper"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
 instance : ToString Instr where

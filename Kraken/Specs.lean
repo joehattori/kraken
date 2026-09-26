@@ -84,6 +84,56 @@ def AddrExpr.interp64 (labels : Labels) (a : AddrExpr) (s : Reg64s) (p : Std.Rco
     CondCode.l.interp s = (s.sf != s.of) := rfl
 @[simp, grind =] theorem CondCode.interp_le (s : StatusFlags) :
     CondCode.le.interp s = ((s.sf != s.of) || s.zf) := rfl
+@[simp, grind =] theorem CondCode.interp_ge (s : StatusFlags) :
+    CondCode.ge.interp s = (s.sf == s.of) := rfl
+@[simp, grind =] theorem CondCode.interp_g (s : StatusFlags) :
+    CondCode.g.interp s = (!s.zf && (s.sf == s.of)) := rfl
+
+/-! ## Signed comparisons
+
+`cmp` leaves the flags of `a - b`, and `jl`/`jge` read them as the signed order
+of `a` and `b`. The two rules below give that reading directly, as the unsigned
+order of the operands with their sign bits flipped. That spelling is linear
+arithmetic with a constant modulus, so `grind` does not case split on the signs
+of `a`, `b` and `a - b`, as it does when the flags unfold to `BitVec.toInt`. The
+hypothesis on `f` says that the overflow flag is the one a subtraction
+computes; `grind` discharges it by reducing the projection. -/
+
+theorem BitVec.toInt_lt_toInt_iff_flip (a b : BitVec 64) :
+    a.toInt < b.toInt ↔ (a.toNat + 2 ^ 63) % 2 ^ 64 < (b.toNat + 2 ^ 63) % 2 ^ 64 := by
+  have ha := a.isLt
+  have hb := b.isLt
+  rw [BitVec.toInt_eq_toNat_cond, BitVec.toInt_eq_toNat_cond]
+  split <;> split <;> omega
+
+theorem BitVec.toInt_le_toInt_iff_flip (a b : BitVec 64) :
+    a.toInt ≤ b.toInt ↔ (a.toNat + 2 ^ 63) % 2 ^ 64 ≤ (b.toNat + 2 ^ 63) % 2 ^ 64 := by
+  have ha := a.isLt
+  have hb := b.isLt
+  rw [BitVec.toInt_eq_toNat_cond, BitVec.toInt_eq_toNat_cond]
+  split <;> split <;> omega
+
+@[grind =] theorem CondCode.interp_l_sub (a b : BitVec 64)
+    (f : StatusFlags.from_result.Remaining)
+    (hf : f.of = ((a - b).signed != a.signed - b.signed)) :
+    CondCode.l.interp (StatusFlags.from_result (a - b) f)
+      = decide ((a.toNat + 2 ^ 63) % 2 ^ 64 < (b.toNat + 2 ^ 63) % 2 ^ 64) := by
+  rw [CondCode.interp_l, StatusFlags.sf_from_result, StatusFlags.of_from_result, hf]
+  have : ((a - b).msb != ((a - b).signed != a.signed - b.signed))
+      = decide (a.toInt < b.toInt) := by
+    grind [BitVec.signed_eq]
+  simp only [this, BitVec.toInt_lt_toInt_iff_flip]
+
+@[grind =] theorem CondCode.interp_ge_sub (a b : BitVec 64)
+    (f : StatusFlags.from_result.Remaining)
+    (hf : f.of = ((a - b).signed != a.signed - b.signed)) :
+    CondCode.ge.interp (StatusFlags.from_result (a - b) f)
+      = decide ((b.toNat + 2 ^ 63) % 2 ^ 64 ≤ (a.toNat + 2 ^ 63) % 2 ^ 64) := by
+  rw [CondCode.interp_ge, StatusFlags.sf_from_result, StatusFlags.of_from_result, hf]
+  have : ((a - b).msb == ((a - b).signed != a.signed - b.signed))
+      = decide (b.toInt ≤ a.toInt) := by
+    grind [BitVec.signed_eq]
+  simp only [this, BitVec.toInt_le_toInt_iff_flip]
 
 /-! ## Reading a named register, one lemma per field -/
 
@@ -147,6 +197,14 @@ attribute [grind =] Width.bytes
     s.get (.low r .W64) = s.get64 r := by
   simp [Reg64s.get, Reg.base, Reg.offset, BitVec.take, BitVec.drop]
 
+/-- A 32-bit read is the low half of the 64-bit register. A `grind` rule only,
+so the simp normal form of a 32-bit read is unchanged. -/
+@[grind =] theorem Reg64s.get_low32 (s : Reg64s) (r : Reg64) :
+    s.get (.low r .W32) = (s.get64 r).setWidth 32 := by
+  simp only [Reg64s.get, Reg.base, Reg.offset, BitVec.take, BitVec.drop]
+  apply BitVec.eq_of_toNat_eq
+  simp [BitVec.extractLsb'_toNat, BitVec.toNat_setWidth]
+
 @[simp, grind =] theorem Reg64s.set_low64 (s : Reg64s) (r : Reg64) (v : BitVec 64) :
     Reg64s.set s (.low r .W64) v = s.set64 r v := rfl
 
@@ -201,6 +259,76 @@ subtraction and a double-width product need once the result is known to fit. -/
 @[simp, grind =] theorem BitVec.ofInt_toInt_int64 (c : Int64) :
     BitVec.ofInt 64 c.toInt = c.toBitVec := by
   rw [show c.toInt = c.toBitVec.toInt from rfl, BitVec.ofInt_toInt]
+
+/-- An immediate reaches `grind` as the payload of an `Int64` literal. This
+rule rewrites the payload to a `BitVec` literal, so that shift counts,
+displacements and masks are numerals to the arithmetic (`no_index` lets it
+match the numeral). `MachineWP` registers it with `grind`'s normalizer. -/
+theorem Int64.toBitVec_ofNat_norm (n : Nat) :
+    (no_index (OfNat.ofNat n : Int64)).toBitVec = BitVec.ofNat 64 n := rfl
+
+/-- A negative immediate, likewise: the parser writes it as the negation of a
+literal. -/
+theorem Int64.toBitVec_neg_ofNat_norm (n : Nat) :
+    (-(no_index (OfNat.ofNat n : Int64))).toBitVec
+      = BitVec.ofNat 64 (2 ^ 64 - n % 2 ^ 64) := by
+  rw [Int64.toBitVec_neg, Int64.toBitVec_ofNat_norm]
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_neg, BitVec.toNat_ofNat]
+
+/-! ## Masks
+
+Code rounds down to a multiple of a power of two with `and $-2^k, %r`, and takes
+the remainder with `and $2^k-1, %r`. The two rules below read such an `and` as
+arithmetic. Each fires only on a literal mask of its shape, which its guards
+decide by evaluation. -/
+
+theorem Nat.and_two_pow_sub_two_pow {x w k : Nat} (hk : k ≤ w) (hx : x < 2 ^ w) :
+    x &&& (2 ^ w - 2 ^ k) = x / 2 ^ k * 2 ^ k := by
+  apply Nat.eq_of_testBit_eq
+  intro i
+  have h1 : 2 ^ w - 2 ^ k = 2 ^ k * (2 ^ (w - k) - 1) := by
+    rw [Nat.mul_sub, Nat.mul_one, ← Nat.pow_add, Nat.add_sub_cancel' hk]
+  rw [h1, Nat.mul_comm (x / 2 ^ k), Nat.testBit_and, Nat.testBit_two_pow_mul,
+    Nat.testBit_two_pow_mul, Nat.testBit_two_pow_sub_one, Nat.testBit_div_two_pow]
+  by_cases hik : k ≤ i
+  · simp only [ge_iff_le, hik, decide_true, Bool.true_and, Nat.sub_add_cancel hik]
+    by_cases hiw : i < w
+    · simp [show i - k < w - k by omega]
+    · have : x.testBit i = false :=
+        Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le hx (Nat.pow_le_pow_right (by decide) (by omega)))
+      simp [this]
+  · simp [hik]
+
+theorem BitVec.toNat_ofNat_lit_of_lt {w m : Nat} (hm : m < 2 ^ w) :
+    (OfNat.ofNat m : BitVec w).toNat = m := by
+  show (BitVec.ofNat w m).toNat = m
+  rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm]
+
+/-- An `and` with a mask of low bits is a remainder. -/
+theorem BitVec.toNat_and_lowMask {w : Nat} (x : BitVec w) (m : Nat) (hm : m < 2 ^ w)
+    (h : m + 1 = 2 ^ Nat.log2 (m + 1)) :
+    (x &&& (OfNat.ofNat m : BitVec w)).toNat = x.toNat % (m + 1) := by
+  obtain ⟨k, hk⟩ : ∃ k, m + 1 = 2 ^ k := ⟨_, h⟩
+  rw [BitVec.toNat_and, BitVec.toNat_ofNat_lit_of_lt hm, hk, show m = 2 ^ k - 1 by omega,
+    Nat.and_two_pow_sub_one_eq_mod]
+
+/-- An `and` with a mask of high bits rounds down to a multiple of `2 ^ w - m`. -/
+theorem BitVec.toNat_and_highMask {w : Nat} (x : BitVec w) (m : Nat) (hm : m < 2 ^ w)
+    (h : 2 ^ w - m = 2 ^ Nat.log2 (2 ^ w - m)) :
+    (x &&& (OfNat.ofNat m : BitVec w)).toNat = x.toNat / (2 ^ w - m) * (2 ^ w - m) := by
+  obtain ⟨k, hk⟩ : ∃ k, 2 ^ w - m = 2 ^ k := ⟨_, h⟩
+  have hkw : k ≤ w := (Nat.pow_le_pow_iff_right Nat.one_lt_two).mp (by omega)
+  rw [BitVec.toNat_and, BitVec.toNat_ofNat_lit_of_lt hm, hk, show m = 2 ^ w - 2 ^ k by omega]
+  exact Nat.and_two_pow_sub_two_pow hkw x.isLt
+
+grind_pattern BitVec.toNat_and_lowMask => x &&& (OfNat.ofNat m : BitVec w) where
+  guard m < 2 ^ w
+  guard m + 1 = 2 ^ Nat.log2 (m + 1)
+
+grind_pattern BitVec.toNat_and_highMask => x &&& (OfNat.ofNat m : BitVec w) where
+  guard m < 2 ^ w
+  guard 2 ^ w - m = 2 ^ Nat.log2 (2 ^ w - m)
 
 /-! ## Alignment
 

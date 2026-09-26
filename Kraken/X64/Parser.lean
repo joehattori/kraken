@@ -476,6 +476,8 @@ def parseCondCode (suffix : String.Slice) : Parser CondCode :=
   | "be" | "na" => .pure .be
   | "l" | "nge" => .pure .l
   | "le" | "ng" => .pure .le
+  | "ge" | "nl" => .pure .ge
+  | "g" | "nle" => .pure .g
   | _ => .fail s!"unknown condition code: {suffix}"
 
 -- ============================================================================
@@ -556,6 +558,41 @@ def commaSeparatedAvx {T1 T2} (op_w: Option AvxWidth) (p1: Parser (MaybeAddrWidt
     let (addr_w2, dst) ← parseAvxAO p2 w
     let addr_w ← mergeAddrWidths addr_w1 addr_w2
     pure (toAvxInstr addr_w (mk dst src))
+
+/-- An AVX register of width `w`. -/
+def parseAvxRegO (w : AvxWidth) : Parser (AvxReg w) := do
+  let ⟨ w', r ⟩ ← parseAvxRegW
+  if h : w' = w then
+    pure (h ▸ r)
+  else
+    fail s!"type error: {w} != {w'}"
+
+/-- The 8-bit immediate `$imm` of a shuffle or lane extract. -/
+def parseImm8 : Parser UInt8 := do
+  skipHWs
+  let _ ← pchar '$'
+  let v ← parseInt
+  if v < -128 || v > 255 then
+    fail s!"immediate {v} out of 8-bit range"
+  pure (UInt8.ofNat (v % 256).toNat)
+
+/-- The VEX three-operand form `op src2, src1, dst`: `src2` may be a memory
+operand, and the registers give the width. -/
+def parseAvx3 (mk : {w : AvxWidth} → AvxReg w → AvxReg w → AvxRegOrMem w → AvxOperation w) :
+    Parser Instr := do
+  let (addr_w, src2) ← parseAvxRegOrMem; parseComma
+  let ⟨ w, src1 ⟩ ← parseAvxRegW; parseComma
+  let dst ← parseAvxRegO w
+  let src2 ← ascribeAvx w src2
+  pure (toAvxInstr addr_w (mk dst src1 src2))
+
+/-- The three-register form `op src2, src1, dst` on xmm registers. -/
+def parseAvxXmm3 (mk : AvxReg .W128 → AvxReg .W128 → AvxReg .W128 → AvxOperation .W128) :
+    Parser Instr := do
+  let src2 ← parseAvxRegO .W128; parseComma
+  let src1 ← parseAvxRegO .W128; parseComma
+  let dst ← parseAvxRegO .W128
+  pure (toAvxInstr .none (mk dst src1 src2))
 
 def assertW {T} (v: MaybeOpWidth T): Parser (Σ w: Width, T w) :=
   match v with
@@ -789,6 +826,32 @@ def parseInstr : Parser Instr := do
 
   | "xorps" =>
     commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .xorps
+
+  -- VEX-encoded forms
+  | "vmovaps" =>
+    commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .vmovaps
+
+  | "vxorps" => parseAvx3 .vxorps
+  | "vaddps" => parseAvx3 .vaddps
+  | "vmulps" => parseAvx3 .vmulps
+  | "vfmadd231ps" => parseAvx3 .vfmadd231ps
+
+  | "vshufps" =>
+    let imm ← parseImm8; parseComma
+    parseAvx3 (fun dst src1 src2 => .vshufps dst src1 src2 imm)
+
+  | "vextractf128" =>
+    let imm ← parseImm8; parseComma
+    let src ← parseAvxRegO .W256; parseComma
+    let dst ← parseAvxRegO .W128
+    pure (toAvxInstr .none (w := .W256) (.vextractf128 dst src imm))
+
+  | "vmovhlps" => parseAvxXmm3 .vmovhlps
+  | "vmovss" => parseAvxXmm3 .vmovss
+  | "vaddss" => parseAvxXmm3 .vaddss
+
+  | "vzeroupper" =>
+    pure (toAvxInstr .none (w := .W128) .vzeroupper)
 
   -- Bitwise - 64-bit
   | "xor" =>

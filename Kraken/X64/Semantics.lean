@@ -2,6 +2,7 @@
 -- which itself is just extracted from https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
 
 import Kraken.Attribute
+import Kraken.Float32Fma
 import Kraken.Layout
 import Kraken.Mem
 import Kraken.X64.Syntax
@@ -181,6 +182,16 @@ def RegZmms.setLegacy (s : RegZmms) {w} (r : AvxReg w) (v : w.type) : RegZmms :=
   | .ymm r => s.set512 r ((s.get512 r).replaceLow v)  -- impossible
   | .xmm r => s.set512 r ((s.get512 r).replaceLow v)
 
+/-- `vzeroupper` in 64-bit mode: bits 511:128 of zmm0–15 are cleared, and
+zmm16–31 are left alone. -/
+def RegZmms.zeroUpper (s : RegZmms) : RegZmms :=
+  let z (v : ZmmValue) : ZmmValue := (BitVec.setWidth 128 v).setWidth 512
+  { s with
+    zmm0 := z s.zmm0, zmm1 := z s.zmm1, zmm2 := z s.zmm2, zmm3 := z s.zmm3,
+    zmm4 := z s.zmm4, zmm5 := z s.zmm5, zmm6 := z s.zmm6, zmm7 := z s.zmm7,
+    zmm8 := z s.zmm8, zmm9 := z s.zmm9, zmm10 := z s.zmm10, zmm11 := z s.zmm11,
+    zmm12 := z s.zmm12, zmm13 := z s.zmm13, zmm14 := z s.zmm14, zmm15 := z s.zmm15 }
+
 @[kstep]
 def BitVec.toAddressSize [address_size: AddressSize] (w: BitVec 64): BitVec address_size.address_size.bits :=
   w.take address_size.address_size.bits
@@ -211,6 +222,42 @@ def BitVec.toFloat32 (v : BitVec 32) : Float32 :=
 
 def Float32.toBitVec (f : Float32) : BitVec 32 :=
   UInt32.toBitVec (Float32.toBits f)
+
+/-- The three-operand sibling of `packedBinOp`: `op` on each `c`-bit chunk of
+`a`, `b` and `d`. -/
+def BitVec.packedTernOp {w : Nat} (c : Nat) (op : BitVec c → BitVec c → BitVec c → BitVec c)
+    (a b d : BitVec w) : BitVec w :=
+  if _ : c = 0 ∨ w < c then
+    a
+  else
+    let res_low := op (a.take c) (b.take c) (d.take c)
+    let res_high := BitVec.packedTernOp c op (a.drop c) (b.drop c) (d.drop c)
+    (BitVec.append res_high res_low).setWidth _
+termination_by w
+decreasing_by omega
+
+/-! Single-precision lane arithmetic, on the bits of a lane. The model rounds
+to nearest, ties to even (MXCSR is not modeled). -/
+
+/-- `a + b` on single-precision lanes. -/
+def BitVec.f32add (a b : BitVec 32) : BitVec 32 :=
+  Float32.toBitVec (BitVec.toFloat32 a + BitVec.toFloat32 b)
+
+/-- `a * b` on single-precision lanes. -/
+def BitVec.f32mul (a b : BitVec 32) : BitVec 32 :=
+  Float32.toBitVec (BitVec.toFloat32 a * BitVec.toFloat32 b)
+
+/-- `a * b + c` on single-precision lanes, rounded once. -/
+def BitVec.f32fma (a b c : BitVec 32) : BitVec 32 :=
+  Float32.toBitVec
+    (Kraken.Float32.fma (BitVec.toFloat32 a) (BitVec.toFloat32 b) (BitVec.toFloat32 c))
+
+/-- One 128-bit lane of `shufps`: the low two floats of the result come from
+`a` and the high two from `b`, each picked by two bits of `imm`. -/
+def BitVec.shufps128 (imm : UInt8) (a b : BitVec 128) : BitVec 128 :=
+  let pick (x : BitVec 128) (k : Nat) : BitVec 32 :=
+    x.extractLsb' (32 * ((imm.toNat >>> k) % 4)) 32
+  pick b 6 ++ pick b 4 ++ pick a 2 ++ pick a 0
 
 structure StatusFlags where
   cf : Bool
@@ -407,6 +454,7 @@ def CondCode.interp (cc : CondCode) (s : StatusFlags) : Bool := match cc with
   | .z  => s.zf | .nz => !s.zf | .c  => s.cf | .nc => !s.cf
   | .a  => !s.cf && !s.zf | .be => s.cf || s.zf
   | .l => s.sf != s.of | .le => (s.sf != s.of) || s.zf
+  | .ge => s.sf == s.of | .g => !s.zf && (s.sf == s.of)
 
 @[kstep] def ShiftCountExpr.interp [Labels] (c : ShiftCountExpr) (s : MachineData) (p : Std.Rco Int64) := match c with
   | .cl => s.regs.rcx.toBitVec.take 8
@@ -762,6 +810,42 @@ match i with
     src.interp s p (checkAlign := true) (fun a s =>
     dst.interp s p (fun b s =>
       s.setAvxLegacy dst (b ^^^ a) p next))
+  -- VEX-encoded forms: a register destination is written with the bits above
+  -- the operation width cleared, and only `vmovaps` requires an aligned memory
+  -- operand.
+  | .vmovaps dst src =>
+    src.interp s p (checkAlign := true)
+      (fun val s => s.setAvx dst val p (checkAlign := true) next)
+  | .vxorps dst src1 src2 =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst (s.zmms.get src1 ^^^ b)))
+  | .vaddps dst src1 src2 =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst (BitVec.packedBinOp 32 BitVec.f32add (s.zmms.get src1) b)))
+  | .vmulps dst src1 src2 =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst (BitVec.packedBinOp 32 BitVec.f32mul (s.zmms.get src1) b)))
+  | .vfmadd231ps dst src1 src2 =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst
+        (BitVec.packedTernOp 32 BitVec.f32fma (s.zmms.get src1) b (s.zmms.get dst))))
+  | .vshufps dst src1 src2 imm =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst (BitVec.packedBinOp 128 (BitVec.shufps128 imm) (s.zmms.get src1) b)))
+  | .vextractf128 dst src imm =>
+    next (s.setAvxReg dst ((s.zmms.get src).extractLsb' (128 * (imm.toNat % 2)) 128))
+  | .vmovhlps dst src1 src2 =>
+    next (s.setAvxReg dst
+      ((s.zmms.get src1).extractLsb' 64 64 ++ (s.zmms.get src2).extractLsb' 64 64))
+  | .vmovss dst src1 src2 =>
+    next (s.setAvxReg dst
+      ((s.zmms.get src1).extractLsb' 32 96 ++ (s.zmms.get src2).extractLsb' 0 32))
+  | .vaddss dst src1 src2 =>
+    let a := s.zmms.get src1
+    let b := s.zmms.get src2
+    next (s.setAvxReg dst
+      (a.extractLsb' 32 96 ++ BitVec.f32add (a.extractLsb' 0 32) (b.extractLsb' 0 32)))
+  | .vzeroupper => next { s with zmms := s.zmms.zeroUpper }
 
 @[kstep]
 def Instr.interp [Labels]

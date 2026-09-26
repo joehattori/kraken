@@ -169,7 +169,7 @@ attribute [coe] AvxOperand.regOrMem
 abbrev AvxOperand.avx {w} (r : AvxReg w) : AvxOperand w := regOrMem (.avx r)
 abbrev AvxOperand.mem {w} (m : AddrExpr) : AvxOperand w := regOrMem (.mem m)
 
-inductive CondCode | z | nz | c | nc | a | be | l | le
+inductive CondCode | z | nz | c | nc | a | be | l | le | ge | g
   deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 abbrev CondCode.e := CondCode.z
 abbrev CondCode.ne := CondCode.nz
@@ -245,6 +245,24 @@ inductive AvxOperation (w : AvxWidth)
   | subps (_ : AvxDst w) (src : AvxRegOrMem w)
   | addps (_ : AvxDst w) (src : AvxRegOrMem w)
   | xorps (_ : AvxDst w) (src : AvxRegOrMem w)
+  -- VEX-encoded forms. A register destination is written with the bits above
+  -- `w` cleared. The three-operand forms read `src1` and `src2`, in Intel
+  -- order (AT&T writes `src2, src1, dst`).
+  | vmovaps (_ : AvxDst w) (src : AvxRegOrMem w)
+  | vxorps (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  | vaddps (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  | vmulps (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  -- `dst := src1 * src2 + dst`, lanewise, rounded once
+  | vfmadd231ps (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  | vshufps (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w) (imm : UInt8)
+  -- Forms whose operands have fixed widths; `w` is the vector length of the
+  -- encoding (`vextractf128` is VEX.256, the others VEX.128). Only the
+  -- register forms are modeled.
+  | vextractf128 (_ : AvxReg .W128) (src : AvxReg .W256) (imm : UInt8)
+  | vmovhlps (_ : AvxReg .W128) (src1 src2 : AvxReg .W128)
+  | vmovss (_ : AvxReg .W128) (src1 src2 : AvxReg .W128)
+  | vaddss (_ : AvxReg .W128) (src1 src2 : AvxReg .W128)
+  | vzeroupper
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 inductive Instr

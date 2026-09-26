@@ -138,6 +138,14 @@ theorem wp_eq [CodeEnv] (q : Program) (Q : Unit → MachineData → Prop)
     (E : Int64 → MachineData → Prop) (s : MachineData) :
     WP.wp q Q E s = cenv.wp q (Q ()) E s := rfl
 
+/- An immediate in a machine-founded VC is the payload of an `Int64` literal.
+With `MachineWP` open, `grind`'s normalizer rewrites it to a `BitVec` literal,
+so no `Int64` literal enters the E-graph: one there, among register reads, has
+been seen to exhaust `grind`'s recursion depth. The rules are scoped because
+the separation-logic proofs (`SepAluMem`, `SepDynamicStack`) need immediates
+in their `Int64` form. -/
+attribute [scoped grind norm] Int64.toBitVec_ofNat_norm Int64.toBitVec_neg_ofNat_norm
+
 end MachineWP
 
 /-! ## The rule set
@@ -206,6 +214,24 @@ theorem AddrExpr.zeroExtend_interp_sib1 [Labels] (b i : Reg64) (regs : Reg64s)
   show BitVec.ofInt 64 _ = _
   simp [Width.bytes, BitVec.ofInt_add, BitVec.ofInt_toInt]
 
+/-- The address a `disp(base,index,1)` operand computes, at 64-bit address
+size: the base register plus the index register plus the displacement. The
+parser writes `(base,index,1)` with the displacement `0`. -/
+theorem AddrExpr.zeroExtend_interp_sib1_disp [Labels] (b i : Reg64) (d : Int64)
+    (regs : Reg64s) (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W64)
+        (a := ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩) regs rng).zeroExtend 64)
+      = regs.get64 b + regs.get64 i + d.toBitVec := by
+  simp only [AddrExpr.interp, ConstExpr.interp, BitVec.toAddressSize]
+  have htake : ∀ x : BitVec 64, x.take Width.W64.bits = x := by
+    intro x
+    simp [BitVec.take, BitVec.extractLsb']
+  rw [htake, htake]
+  have hsigned : ∀ x : BitVec 64, x.signed = x.toInt := fun _ => rfl
+  rw [hsigned, hsigned]
+  show BitVec.ofInt 64 _ = _
+  simp [Width.bytes, BitVec.ofInt_add, BitVec.ofInt_toInt]
+
 /-- The address a `disp(base)` expression computes, at 64-bit address size:
 the base register plus the displacement. -/
 theorem AddrExpr.zeroExtend_interp_base_disp [L : Labels] (b : Reg64) (d : Int64)
@@ -248,6 +274,7 @@ local macro "wp_step" : tactic =>
       Operation.interp, AvxOperation.interp, Operand.interp, RegOrMem.interp,
       AvxRegOrMem.interp, RelRegOrMem.interp, ConstExpr.interp,
       MachineData.set, MachineData.setReg, MachineData.setAvxLegacy, MachineData.setAvxLegacyReg,
+      MachineData.setAvx, MachineData.setAvxReg,
       Reg64s.get_low64, Reg64s.set_low64, Effects.All, or_false, false_or])
 
 /-- Unfold the fall-through address past one instruction cell. -/
@@ -314,6 +341,13 @@ private theorem fallthrough_nondet_spec {α : Type} [NondetSupportingType α] {i
 @[spec] theorem MachineWP.mov_reg_imm_spec (asz : Width) (r : Reg64) (i : Int64) :
     ⦃ fun s => WP.wp p Q E { s with regs := s.regs.set64 r (BitVec.setWidth 64 i.toBitVec) } ⦄
       (Directive.instr (.regular asz .W64 (.mov (.reg (.low r .W64)) (.imm (.int64 i)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.mov_reg_reg_spec (asz : Width) (rd rs : Reg64) :
+    ⦃ fun s => WP.wp p Q E { s with regs := s.regs.set64 rd (s.regs.get64 rs) } ⦄
+      (Directive.instr (.regular asz .W64
+          (.mov (.reg (.low rd .W64)) (.regOrMem (.reg (.low rs .W64))))) :: p)
     ⦃ Q; E ⦄ :=
   fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
 
@@ -390,6 +424,20 @@ private theorem fallthrough_nondet_spec {α : Type} [NondetSupportingType α] {i
                 status := StatusFlags.from_result v { cf := false, of := false, af } } ⦄
       (Directive.instr (.regular asz .W64
           (.xor (.reg (.low rd .W64)) (.regOrMem (.reg (.low rs .W64))))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_nondet_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `and $i, %r` : the register gets its conjunction with the immediate, and the
+flags are those of the result, with `af` left arbitrary. -/
+@[spec] theorem MachineWP.and_reg_imm_spec (asz : Width) (r : Reg64) (i : Int64) :
+    ⦃ fun s =>
+        let v := s.regs.get64 r &&& BitVec.setWidth 64 i.toBitVec
+        ∀ af : Bool,
+          WP.wp p Q E
+            { s with
+                regs := s.regs.set64 r v,
+                status := StatusFlags.from_result v { cf := false, of := false, af } } ⦄
+      (Directive.instr (.regular asz .W64 (.and (.reg (.low r .W64)) (.imm (.int64 i)))) :: p)
     ⦃ Q; E ⦄ :=
   fallthrough_nondet_spec (fun s rng P hP => by wp_step; exact hP)
 
@@ -563,6 +611,22 @@ program. -/
     ⦃ Q; E ⦄ :=
   fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
 
+/-- `cmp $i, %r` : the flags of `r - i`; no register changes. -/
+@[spec] theorem MachineWP.cmp_reg_imm_spec (asz : Width) (r : Reg64) (i : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 r
+        let b := BitVec.setWidth 64 i.toBitVec
+        let v := a - b
+        WP.wp p Q E
+          { s with
+              status := StatusFlags.from_result v
+                { cf := v.unsigned != a.unsigned - b.unsigned,
+                  af := (v.take 4).unsigned != (a.take 4).unsigned - (b.take 4).unsigned,
+                  of := v.signed != a.signed - b.signed } } ⦄
+      (Directive.instr (.regular asz .W64 (.cmp (.reg (.low r .W64)) (.imm (.int64 i)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
 /-- `movaps d(%b), %xmm` : the address must be 16-byte aligned and the 16 bytes
 there readable; the tail runs with the loaded value in the register. -/
 @[spec] theorem MachineWP.movaps_load_base_disp_spec (x : RegMm) (b : Reg64) (d : Int64) :
@@ -634,6 +698,181 @@ aligned and readable; the tail runs with them xored into the register. -/
     wp_step
     simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_rip_label, hal, hv,
       AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-! ### VEX-encoded AVX
+
+A VEX write to a register clears the bits above the operation width, which is
+what `RegZmms.set` does. Of the memory operands, only `vmovaps` checks
+alignment. The memory rules take the `disp(%b,%i,1)` shape; the parser writes
+`(%b,%i,1)` as the displacement `0`, so the same rules cover it. -/
+
+@[spec] theorem MachineWP.vxorps_reg_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg w) :
+    ⦃ fun s => WP.wp p Q E
+        { s with zmms := s.zmms.set dst (s.zmms.get src1 ^^^ s.zmms.get src2) } ⦄
+      (Directive.instr (.avx asz w (.vxorps dst src1 (.avx src2))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vaddps_reg_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg w) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        (BitVec.packedBinOp 32 BitVec.f32add (s.zmms.get src1) (s.zmms.get src2))) } ⦄
+      (Directive.instr (.avx asz w (.vaddps dst src1 (.avx src2))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vshufps_reg_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg w) (imm : UInt8) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        (BitVec.packedBinOp 128 (BitVec.shufps128 imm) (s.zmms.get src1) (s.zmms.get src2))) } ⦄
+      (Directive.instr (.avx asz w (.vshufps dst src1 (.avx src2) imm)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vextractf128_spec {w : AvxWidth} (asz : Width)
+    (dst : AvxReg .W128) (src : AvxReg .W256) (imm : UInt8) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        ((s.zmms.get src).extractLsb' (128 * (imm.toNat % 2)) 128)) } ⦄
+      (Directive.instr (.avx asz w (.vextractf128 dst src imm)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vmovhlps_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg .W128) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        ((s.zmms.get src1).extractLsb' 64 64 ++ (s.zmms.get src2).extractLsb' 64 64)) } ⦄
+      (Directive.instr (.avx asz w (.vmovhlps dst src1 src2)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vmovss_reg_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg .W128) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        ((s.zmms.get src1).extractLsb' 32 96 ++ (s.zmms.get src2).extractLsb' 0 32)) } ⦄
+      (Directive.instr (.avx asz w (.vmovss dst src1 src2)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vaddss_spec {w : AvxWidth} (asz : Width)
+    (dst src1 src2 : AvxReg .W128) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := (s.zmms.set dst
+        ((s.zmms.get src1).extractLsb' 32 96
+          ++ BitVec.f32add ((s.zmms.get src1).extractLsb' 0 32)
+            ((s.zmms.get src2).extractLsb' 0 32))) } ⦄
+      (Directive.instr (.avx asz w (.vaddss dst src1 src2)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+@[spec] theorem MachineWP.vzeroupper_spec {w : AvxWidth} (asz : Width) :
+    ⦃ fun s => WP.wp p Q E { s with zmms := s.zmms.zeroUpper } ⦄
+      (Directive.instr (.avx asz w .vzeroupper) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `vmovups d(%b,%i,1), %ymm` : the 32 bytes at the address must be readable,
+at any alignment; the tail runs with them in the register. -/
+@[spec] theorem MachineWP.vmovups_load_sib1_disp_spec (y : AvxReg .W256) (b i : Reg64)
+    (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        ((Mem.loadInt s.dmem a 32).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 32 = some v →
+            WP.wp p Q E { s with zmms := s.zmms.set y (BitVec.ofInt 256 v) }) ⦄
+      (Directive.instr (.avx .W64 .W256
+          (.vmovups (.avx y) (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hv, AvxWidth.bytes,
+      Bool.false_and, Bool.false_eq_true, ite_false]
+    exact hk v hv _ hpl'
+
+/-- `vfmadd231ps d(%b,%i,1), %ymm1, %ymm0` : the 32 bytes at the address must
+be readable, at any alignment; the tail runs with `ymm0 + ymm1 * mem`, each lane
+rounded once, in `ymm0`. -/
+@[spec] theorem MachineWP.vfmadd231ps_load_sib1_disp_spec (dst src1 : AvxReg .W256)
+    (b i : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        ((Mem.loadInt s.dmem a 32).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 32 = some v →
+            WP.wp p Q E { s with zmms := (s.zmms.set dst
+              (BitVec.packedTernOp 32 BitVec.f32fma (s.zmms.get src1) (BitVec.ofInt 256 v)
+                (s.zmms.get dst))) }) ⦄
+      (Directive.instr (.avx .W64 .W256
+          (.vfmadd231ps dst src1 (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hv, AvxWidth.bytes,
+      Bool.false_and, Bool.false_eq_true, ite_false]
+    exact hk v hv _ hpl'
+
+/-- `vmovaps d(%b,%i,1), %xmm` : the address must be 16-byte aligned and the 16
+bytes there readable; the tail runs with them in the register. -/
+@[spec] theorem MachineWP.vmovaps_load_sib1_disp_spec (x : AvxReg .W128) (b i : Reg64)
+    (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := s.zmms.set x (BitVec.ofInt 128 v) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.vmovaps (.avx x) (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hal, hv,
+      AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-- `vmulps d(%b,%i,1), %xmm1, %xmm0` : the 16 bytes at the address must be
+readable, at any alignment; the tail runs with `xmm1 * mem` in `xmm0`. -/
+@[spec] theorem MachineWP.vmulps_load_sib1_disp_spec (dst src1 : AvxReg .W128)
+    (b i : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := (s.zmms.set dst
+              (BitVec.packedBinOp 32 BitVec.f32mul (s.zmms.get src1) (BitVec.ofInt 128 v))) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.vmulps dst src1 (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hv, AvxWidth.bytes,
+      Bool.false_and, Bool.false_eq_true, ite_false]
     exact hk v hv _ hpl'
 
 /-- A data cell does not run: the machine faults on reaching it. Its rule asks
