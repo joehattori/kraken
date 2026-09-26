@@ -244,6 +244,7 @@ inductive AvxOperation (w : AvxWidth)
   | movaps (_ : AvxDst w) (src : AvxRegOrMem w)
   | subps (_ : AvxDst w) (src : AvxRegOrMem w)
   | addps (_ : AvxDst w) (src : AvxRegOrMem w)
+  | xorps (_ : AvxDst w) (src : AvxRegOrMem w)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 inductive Instr

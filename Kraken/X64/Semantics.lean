@@ -758,6 +758,10 @@ match i with
         Float32.toBitVec (f_dst + f_src)
       ) b a
       s.setAvxLegacy dst v p next))
+  | .xorps dst src =>
+    src.interp s p (checkAlign := true) (fun a s =>
+    dst.interp s p (fun b s =>
+      s.setAvxLegacy dst (b ^^^ a) p next))
 
 @[kstep]
 def Instr.interp [Labels]

@@ -422,7 +422,9 @@ def parseAvxRegOrMem: Parser (MaybeAddrWidth × MaybeAvxOpWidth AvxRegOrMem) := 
   if c == '%' then
     let ⟨ w, r ⟩ ← parseAvxRegW
     pure (.none, ⟨ .some w, .avx r ⟩)
-  else if c == '(' || c == '-' || c.isDigit then
+  -- A symbol starts a memory operand too: an SSE operand is never an
+  -- immediate, so `sym(%rip)` is a rip-relative reference.
+  else if c == '(' || c == '-' || c.isDigit || c.isAlpha || c == '_' || c == '.' then
     let (w, m) ← parseMemory
     pure (w, ⟨ .none, .mem m ⟩)
   else
@@ -785,6 +787,9 @@ def parseInstr : Parser Instr := do
   | "subps" =>
     commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .subps
 
+  | "xorps" =>
+    commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .xorps
+
   -- Bitwise - 64-bit
   | "xor" =>
     commaSeparated .none parseOperand parseRegOrMem .xor
@@ -1020,6 +1025,18 @@ def parseAlign : Parser Instr := do
   ) <|> pure none
   pure (toInstr .none (w := .W64) (.nopalign alignment.toNat pad))
 
+/-- Parse a `.byte` data directive: comma-separated byte values, decimal or
+hex. The bytes become one data cell. -/
+def parseByteData : Parser Directive := do
+  let _ ← pstring ".byte"
+  skipHWs
+  let first ← parseHexOrDec
+  let rest ← many (attempt do parseComma; parseHexOrDec)
+  let vals := #[first] ++ rest
+  if vals.any (fun v => v < 0 || v > 255) then
+    fail "byte value out of range"
+  pure (.byteArray ⟨vals.map (fun v => UInt8.ofNat v.toNat)⟩)
+
 def skipSpaceAndCheckLineEnd : Parser Bool := do
   skipHWs
   let c? ← peek?
@@ -1037,8 +1054,8 @@ def parseOptionalInstr : Parser (Option Directive) := do
   if (← skipSpaceAndCheckLineEnd) then
     pure none
   else
-    let i ← parseAlign <|> parseInstr
-    pure (some (Directive.instr i))
+    let d ← parseByteData <|> (Directive.instr <$> (parseAlign <|> parseInstr))
+    pure (some d)
 
 def checkLineEnd : Parser Unit := do
   if (← skipSpaceAndCheckLineEnd) then

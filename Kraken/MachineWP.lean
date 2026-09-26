@@ -206,6 +206,36 @@ theorem AddrExpr.zeroExtend_interp_sib1 [Labels] (b i : Reg64) (regs : Reg64s)
   show BitVec.ofInt 64 _ = _
   simp [Width.bytes, BitVec.ofInt_add, BitVec.ofInt_toInt]
 
+/-- The address a `disp(base)` expression computes, at 64-bit address size:
+the base register plus the displacement. -/
+theorem AddrExpr.zeroExtend_interp_base_disp [L : Labels] (b : Reg64) (d : Int64)
+    (regs : Reg64s) (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W64)
+        (a := ⟨some (.reg b), none, .int64 d⟩) regs rng).zeroExtend 64)
+      = regs.get64 b + BitVec.ofInt 64 d.toInt := by
+  simp only [AddrExpr.interp, ConstExpr.interp, BitVec.toAddressSize, Reg64s.get64]
+  have htake : ∀ x : BitVec 64, x.take Width.W64.bits = x := by
+    intro x
+    simp [BitVec.take, BitVec.extractLsb']
+  rw [htake]
+  have hsigned : ∀ x : BitVec 64, x.signed = x.toInt := fun _ => rfl
+  rw [hsigned, Int.add_zero,
+    show ∀ y : BitVec Width.W64.bits, BitVec.zeroExtend 64 y = y from fun _ => rfl,
+    BitVec.ofInt_add, BitVec.ofInt_toInt]
+
+/-- The address a `sym(%rip)` operand computes: the symbol's. The assembler's
+displacement is the symbol minus the address behind the instruction, which is
+where `%rip` points. -/
+theorem AddrExpr.zeroExtend_interp_rip_label [Labels] (l : Label) (regs : Reg64s)
+    (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W64)
+        (a := ⟨some .rip, none, .sub (.label l) .after_current_instruction⟩) regs rng).zeroExtend 64)
+      = (label l).toBitVec := by
+  simp only [AddrExpr.interp, ConstExpr.interp]
+  show BitVec.ofInt 64 _ = _
+  rw [Int.add_zero, BitVec.ofInt_add, BitVec.ofInt_toInt_int64, BitVec.ofInt_toInt_int64,
+    Int64.toBitVec_sub, BitVec.add_comm, BitVec.sub_add_cancel]
+
 section Specs
 
 open MachineWP
@@ -496,6 +526,121 @@ bytes there owned (readable); the tail runs on the updated memory. -/
     simp only [MachineData.storeAvx, AddrExpr.zeroExtend_interp_sib1, hal, hv, AvxWidth.bytes,
       Bool.not_true, Bool.and_false]
     exact hk _ hpl'
+
+/-! ### Displacement and rip-relative operands
+
+The operand shapes of compiled SSE code: a base register plus a constant
+displacement, and a symbol addressed relative to `%rip`. A load or store at a
+displacement has the side conditions of the `sib1` rules, at the address the
+operand computes; a rip-relative operand reads the data at a label of the
+program. -/
+
+/-- `lea d(%b), %r` : the register gets the base plus the displacement. -/
+@[spec] theorem MachineWP.lea_base_disp_spec (r b : Reg64) (d : Int64) :
+    ⦃ fun s => WP.wp p Q E { s with regs := s.regs.set64 r (s.regs.get64 b + d.toBitVec) } ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.lea (.low r .W64) ⟨some (.reg b), none, .int64 d⟩)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by
+    wp_step
+    simp only [AddrExpr.zeroExtend_interp_base_disp, BitVec.ofInt_toInt_int64]
+    exact hP)
+
+/-- `cmp %rb, %ra` : the flags of `ra - rb`; no register changes. -/
+@[spec] theorem MachineWP.cmp_reg_reg_spec (asz : Width) (ra rb : Reg64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 ra
+        let b := s.regs.get64 rb
+        let v := a - b
+        WP.wp p Q E
+          { s with
+              status := StatusFlags.from_result v
+                { cf := v.unsigned != a.unsigned - b.unsigned,
+                  af := (v.take 4).unsigned != (a.take 4).unsigned - (b.take 4).unsigned,
+                  of := v.signed != a.signed - b.signed } } ⦄
+      (Directive.instr (.regular asz .W64
+          (.cmp (.reg (.low ra .W64)) (.regOrMem (.reg (.low rb .W64))))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `movaps d(%b), %xmm` : the address must be 16-byte aligned and the 16 bytes
+there readable; the tail runs with the loaded value in the register. -/
+@[spec] theorem MachineWP.movaps_load_base_disp_spec (x : RegMm) (b : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := s.zmms.setLegacy (.xmm x) (BitVec.ofInt 128 v) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.avx (.xmm x)) (.mem ⟨some (.reg b), none, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_base_disp,
+      BitVec.ofInt_toInt_int64, hal, hv, AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-- `movaps %xmm, d(%b)` : the address must be 16-byte aligned and the 16 bytes
+there owned (readable); the tail runs on the updated memory. -/
+@[spec] theorem MachineWP.movaps_store_base_disp_spec (x : RegMm) (b : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 16 (s.zmms.get (.xmm x)).toInt } ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.mem ⟨some (.reg b), none, .int64 d⟩) (.avx (.xmm x)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.storeAvx, AddrExpr.zeroExtend_interp_base_disp,
+      BitVec.ofInt_toInt_int64, hal, hv, AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk _ hpl'
+
+/-- `xorps sym(%rip), %xmm` : the 16 bytes at the label `sym` must be 16-byte
+aligned and readable; the tail runs with them xored into the register. -/
+@[spec] theorem MachineWP.xorps_load_rip_spec (x : RegMm) (l : Label) :
+    ⦃ fun s =>
+        let a := ((_root_.Executable.labels cenv).label l).toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with
+              zmms := s.zmms.setLegacy (.xmm x) (s.zmms.get (.xmm x) ^^^ BitVec.ofInt 128 v) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.xorps (.avx (.xmm x))
+            (.mem ⟨some .rip, none, .sub (.label l) .after_current_instruction⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_rip_label, hal, hv,
+      AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-- A data cell does not run: the machine faults on reaching it. Its rule asks
+that control never get there, which a table entry of `False` provides. -/
+@[spec] theorem MachineWP.byteArray_spec (a : ByteArray) :
+    ⦃ fun _ => False ⦄ (Directive.byteArray a :: p) ⦃ Q; E ⦄ :=
+  Triple.intro fun _ h => False.elim h
 
 @[spec] theorem MachineWP.jmp_label_spec (asz osz : Width) (l : Label) :
     ⦃ fun s => E ((_root_.Executable.labels cenv).label l) s ⦄

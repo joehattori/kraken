@@ -170,6 +170,7 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .movaps dst src => s!"movaps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .subps dst src => s!"subps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .addps dst src => s!"addps {dst.toStr addr_w}, {src.toStr addr_w}"
+  | .xorps dst src => s!"xorps {dst.toStr addr_w}, {src.toStr addr_w}"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
 instance : ToString Instr where
