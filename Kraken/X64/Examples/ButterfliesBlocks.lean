@@ -65,10 +65,6 @@ loop:
 /- The `jl` exit reads the overflow flag, which compares signed values. -/
 attribute [local grind =] BitVec.signed_eq
 
-/-- The jump target of the loop is mapped. -/
-@[grind .] private theorem bf_loop_isSome :
-    (Program.blockAt butterflies_float_prog "loop").isSome := by decide
-
 /-- The spec table: the machine at each label, for a run that started on `d`
 over arrays of `L` bytes. At `loop` it is the loop invariant: both pointers sit
 one past the end of their array, `rdx` is minus the bytes still to process (a

@@ -58,15 +58,6 @@ so the rewrite cannot feed itself. -/
         Nat.pow_le_pow_right (by omega) (Nat.pow_le_pow_right (by omega) (by omega))
     _ < 2 ^ 64 := hbound
 
-/-- The forward edge of the loop: `_end` sits later in the text than `start`. -/
-@[grind .] private theorem idx_start_lt_end :
-    Program.blockIdx p3 "start" < Program.blockIdx p3 "_end" := by
-  decide
-
-/-- The jump targets of `p3` are mapped. -/
-@[grind .] private theorem p3_start_isSome : (Program.blockAt p3 "start").isSome := by decide
-@[grind .] private theorem p3_end_isSome : (Program.blockAt p3 "_end").isSome := by decide
-
 /-- The spec table: the machine at each label of `p3`, for a run that started
 on `d`. At `start` it is the loop invariant. -/
 private abbrev p3_table (d : MachineData) : Label → MachineData → Prop

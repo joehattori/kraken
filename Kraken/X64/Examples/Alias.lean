@@ -27,17 +27,6 @@ fin:
   nop
 ")
 
-/-- The jump edge goes forward in the text. -/
-private theorem idx_init_lt_fin :
-    Program.blockIdx palias "init" < Program.blockIdx palias "fin" := by
-  decide
-
-grind_pattern idx_init_lt_fin => Program.blockIdx palias "fin"
-
-/-- The jump target of `palias` is mapped. -/
-@[grind .] private theorem palias_fin_isSome :
-    (Program.blockAt palias "fin").isSome := by decide
-
 /-- The spec table: nothing on entry, nothing reaches `alias`, and at `fin`
 the register holds the answer. -/
 private abbrev palias_table : Label → MachineData → Prop

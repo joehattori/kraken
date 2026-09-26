@@ -39,14 +39,6 @@ abbrev pswap.body : Program := parse("
   ret
 ")
 
-/-- The jump edge of the caller goes forward in the text. -/
-@[grind .] private theorem pswap_idx_start_lt_done :
-    Program.blockIdx pswap "start" < Program.blockIdx pswap "done" := by decide
-
-/-- The jump target of the caller is mapped. -/
-@[grind .] private theorem pswap_done_isSome :
-    (Program.blockAt pswap "done").isSome := by decide
-
 /-- The spec table: the caller starts on `d`, the tail holds the answer, and
 the procedure is entered by a call rather than by an edge of the table. -/
 private abbrev pswap_table (d : MachineData) : Label → MachineData → Prop
