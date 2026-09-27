@@ -806,6 +806,10 @@ match i with
         Float32.toBitVec (f_dst + f_src)
       ) b a
       s.setAvxLegacy dst v p next))
+  | .mulps dst src =>
+    src.interp s p (checkAlign := true) (fun a s =>
+    dst.interp s p (fun b s =>
+      s.setAvxLegacy dst (BitVec.packedBinOp 32 BitVec.f32mul b a) p next))
   | .xorps dst src =>
     src.interp s p (checkAlign := true) (fun a s =>
     dst.interp s p (fun b s =>

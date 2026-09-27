@@ -142,6 +142,20 @@ theorem List.allSome_map_some {α : Type} (l : List α) : List.allSome (l.map so
   rw [List.mapM_loop_id_some l []]
   simp
 
+/-- A list of options reads as `some` iff each option is `some`. -/
+theorem List.allSome_isSome_iff {α : Type} (l : List (Option α)) :
+    l.allSome.isSome = true ↔ ∀ o ∈ l, o.isSome = true := by
+  induction l with
+  | nil => simp [List.allSome]
+  | cons o l ih =>
+    cases o with
+    | none => simp [List.allSome]
+    | some a =>
+      simp only [List.allSome] at ih ⊢
+      simp only [List.mapM_cons, id, List.mem_cons, forall_eq_or_imp, Option.isSome_some,
+        true_and]
+      cases hl : List.mapM id l <;> simpa [hl] using ih
+
 /-- A list of options that reads as `some xs` is `xs` under `some`. -/
 theorem List.allSome_eq_map_some {α : Type} :
     ∀ {l : List (Option α)} {xs : List α}, l.allSome = some xs → l = xs.map some := by

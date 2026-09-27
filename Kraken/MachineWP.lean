@@ -262,6 +262,26 @@ theorem AddrExpr.zeroExtend_interp_rip_label [Labels] (l : Label) (regs : Reg64s
   rw [Int.add_zero, BitVec.ofInt_add, BitVec.ofInt_toInt_int64, BitVec.ofInt_toInt_int64,
     Int64.toBitVec_sub, BitVec.add_comm, BitVec.sub_add_cancel]
 
+/-- The address a `disp(,index,scale)` operand computes at 32-bit address size
+(the `0x67` prefix), zero-extended: the low half of the index register times
+the scale, plus the displacement, wrapped to 32 bits. -/
+theorem AddrExpr.zeroExtend_interp_index32_disp [Labels] (i : Reg64) (c : Width) (d : Int64)
+    (regs : Reg64s) (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W32)
+        (a := ⟨none, some ⟨i, c⟩, .int64 d⟩) regs rng).zeroExtend 64)
+      = (regs.get (.low i .W32) * BitVec.ofNat 32 c.bytes
+          + d.toBitVec.setWidth 32).zeroExtend 64 := by
+  simp only [AddrExpr.interp, ConstExpr.interp, BitVec.toAddressSize, Reg64s.get_low32]
+  congr 1
+  have htake : (regs.get64 i).take Width.W32.bits = (regs.get64 i).setWidth 32 := by
+    apply BitVec.eq_of_toNat_eq
+    simp [BitVec.take, BitVec.extractLsb'_toNat, BitVec.toNat_setWidth]
+  rw [htake]
+  have hsigned : ∀ x : BitVec 32, x.signed = x.toInt := fun _ => rfl
+  rw [hsigned, Int.zero_add, BitVec.ofInt_add, BitVec.ofInt_mul, BitVec.ofInt_toInt,
+    BitVec.ofInt_natCast, show d.toInt = d.toBitVec.toInt from rfl,
+    ← BitVec.signExtend, BitVec.signExtend_eq_setWidth_of_le _ (by decide)]
+
 section Specs
 
 open MachineWP
@@ -594,6 +614,21 @@ program. -/
     simp only [AddrExpr.zeroExtend_interp_base_disp, BitVec.ofInt_toInt_int64]
     exact hP)
 
+/-- `lea d(,%i32,s), %r` : a 32-bit address without a base register. The
+register gets the low half of the index times the scale, plus the displacement,
+wrapped to 32 bits and zero-extended; the upper half of the index is ignored. -/
+@[spec] theorem MachineWP.lea_index32_disp_spec (r i : Reg64) (c : Width) (d : Int64) :
+    ⦃ fun s => WP.wp p Q E { s with regs := (s.regs.set64 r
+        ((s.regs.get (.low i .W32) * BitVec.ofNat 32 c.bytes
+          + d.toBitVec.setWidth 32).zeroExtend 64)) } ⦄
+      (Directive.instr (.regular .W32 .W64
+          (.lea (.low r .W64) ⟨none, some ⟨i, c⟩, .int64 d⟩)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by
+    wp_step
+    simp only [AddrExpr.zeroExtend_interp_index32_disp]
+    exact hP)
+
 /-- `cmp %rb, %ra` : the flags of `ra - rb`; no register changes. -/
 @[spec] theorem MachineWP.cmp_reg_reg_spec (asz : Width) (ra rb : Reg64) :
     ⦃ fun s =>
@@ -673,6 +708,84 @@ there owned (readable); the tail runs on the updated memory. -/
     simp only [MachineData.storeAvx, AddrExpr.zeroExtend_interp_base_disp,
       BitVec.ofInt_toInt_int64, hal, hv, AvxWidth.bytes, Bool.not_true, Bool.and_false]
     exact hk _ hpl'
+
+/-- `movaps d(%b,%i,1), %xmm` : the address `b + i + d` must be 16-byte aligned
+and the 16 bytes there readable; the tail runs with them in the register. The
+priority is low, so that the displacement-`0` form keeps `movaps_load_sib1_spec`. -/
+@[spec low] theorem MachineWP.movaps_load_sib1_disp_spec (x : RegMm) (b i : Reg64)
+    (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := s.zmms.setLegacy (.xmm x) (BitVec.ofInt 128 v) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.avx (.xmm x)) (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hal, hv,
+      AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
+
+/-- `movaps %xmm, d(%b,%i,1)` : the address `b + i + d` must be 16-byte aligned
+and the 16 bytes there owned (readable); the tail runs on the updated memory.
+The priority is low, as for the load. -/
+@[spec low] theorem MachineWP.movaps_store_sib1_disp_spec (x : RegMm) (b i : Reg64)
+    (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 16 (s.zmms.get (.xmm x)).toInt } ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.movaps (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩) (.avx (.xmm x)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.storeAvx, AddrExpr.zeroExtend_interp_sib1_disp, hal, hv,
+      AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk _ hpl'
+
+/-- `mulps d(%b,%i,1), %xmm` : the address `b + i + d` must be 16-byte aligned
+and the 16 bytes there readable; the tail runs with `xmm * mem`, lanewise, in
+the register, whose bits above 128 are kept. The parser writes `(%b,%i,1)` with
+the displacement `0`, so this rule covers it too. -/
+@[spec] theorem MachineWP.mulps_load_sib1_disp_spec (x : RegMm) (b i : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i + d.toBitVec
+        (isAligned 16 a = true) ⊓ ((Mem.loadInt s.dmem a 16).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 16 = some v →
+            WP.wp p Q E { s with zmms := (s.zmms.setLegacy (.xmm x)
+              (BitVec.packedBinOp 32 BitVec.f32mul (s.zmms.get (.xmm x)) (BitVec.ofInt 128 v))) }) ⦄
+      (Directive.instr (.avx .W64 .W128
+          (.mulps (.avx (.xmm x)) (.mem ⟨some (.reg b), some ⟨i, .W8⟩, .int64 d⟩))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨⟨hal, hsome⟩, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hal, hv,
+      AvxWidth.bytes, Bool.not_true, Bool.and_false]
+    exact hk v hv _ hpl'
 
 /-- `xorps sym(%rip), %xmm` : the 16 bytes at the label `sym` must be 16-byte
 aligned and readable; the tail runs with them xored into the register. -/

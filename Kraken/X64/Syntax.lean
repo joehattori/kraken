@@ -244,6 +244,7 @@ inductive AvxOperation (w : AvxWidth)
   | movaps (_ : AvxDst w) (src : AvxRegOrMem w)
   | subps (_ : AvxDst w) (src : AvxRegOrMem w)
   | addps (_ : AvxDst w) (src : AvxRegOrMem w)
+  | mulps (_ : AvxDst w) (src : AvxRegOrMem w)
   | xorps (_ : AvxDst w) (src : AvxRegOrMem w)
   -- VEX-encoded forms. A register destination is written with the bits above
   -- `w` cleared. The three-operand forms read `src1` and `src2`, in Intel

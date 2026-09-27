@@ -199,11 +199,12 @@ nothing else about memory.
 The load and store lemmas fire in `grind` on such a fact and an access.
 Their side condition `Blocks.Inside` has one introduction rule per usual
 address shape: the block's base, the base plus an offset, and the base plus
-two offsets (a pointer into the block plus an index). `grind` applies a rule
-only when the address is computed from that block's base, so it never has to
-rule out the other blocks. A pointer that moves through a block, as in a loop,
-is not computed from the base; its rule applies when the pointer's offset from
-the base is among the terms, as it is when a loop invariant bounds it. -/
+two offsets (a pointer into the block plus an index), with the base as the
+first or the second term. `grind` applies a rule only when the address is
+computed from that block's base, so it never has to rule out the other blocks.
+A pointer that moves through a block, as in a loop, is not computed from the
+base; its rule applies when the pointer's offset from the base is among the
+terms, as it is when a loop invariant bounds it. -/
 
 /-- An owned region of `len` bytes at `a`, whose contents are not tracked. -/
 def Block {w : Nat} (a : BitVec w) (len : Nat) (h : Mem w) : Prop :=
@@ -278,6 +279,16 @@ theorem Blocks.Inside.base_add_add {w : Nat} {a c x : BitVec w} {n len : Nat}
     Blocks.Inside (a + c + x) n ((a, len) :: bs) :=
   Or.inl (by rw [BitVec.add_assoc, BitVec.add_comm, BitVec.add_sub_cancel]; exact h)
 
+/-- An access at offsets `c` and `x` around a block's base, as `c + a + x`: an
+operand whose index register holds the pointer to the block, such as
+`16(%rcx,%rsi,1)` for the block at `rsi`. -/
+theorem Blocks.Inside.add_base_add {w : Nat} {a c x : BitVec w} {n len : Nat}
+    {bs : List (BitVec w × Nat)} (h : (c + x).toNat + n ≤ len) :
+    Blocks.Inside (c + a + x) n ((a, len) :: bs) :=
+  Or.inl (by
+    rw [BitVec.add_comm c a, BitVec.add_assoc, BitVec.add_comm, BitVec.add_sub_cancel]
+    exact h)
+
 /-- An access at an offset `x` from a pointer `p` into a block, given the
 pointer's offset `p - a` from the base: the form in which a loop invariant
 tracks a moving pointer. -/
@@ -342,11 +353,52 @@ grind_pattern Blocks.Inside.tail => Blocks.Inside addr n (p :: bs)
 grind_pattern Blocks.Inside.base => Blocks.Inside a n ((a, len) :: bs)
 grind_pattern Blocks.Inside.base_add => Blocks.Inside (a + x) n ((a, len) :: bs)
 grind_pattern Blocks.Inside.base_add_add => Blocks.Inside (a + c + x) n ((a, len) :: bs)
+grind_pattern Blocks.Inside.add_base_add => Blocks.Inside (c + a + x) n ((a, len) :: bs)
 -- The pointer rule also needs the offset `p - a` among the terms, which an
 -- invariant about the pointer puts there. Otherwise any pointer into any block
 -- would match, and ruling out the wrong blocks swamps the arithmetic.
 grind_pattern Blocks.Inside.ptr_add => Blocks.Inside (p + x) n ((a, len) :: bs), p - a
 grind_pattern Blocks.loadInt_isSome => sep (Blocks bs) F m, Mem.loadInt m addr n
 grind_pattern Blocks.storeInt => sep (Blocks bs) F m, Mem.storeInt m addr n v
+
+/-! ## Readable addresses across stores
+
+A store never unmaps an address: `Mem.storeInt` is a union into the map. So a
+load that a fact about the initial memory shows readable stays readable,
+whatever the program stores in between. `SubDom m m'` says that `m'` maps
+every address `m` maps. A loop invariant carries `SubDom d.dmem s.dmem`, and a
+load in `s.dmem` is readable when a fact about `d.dmem`, such as a `Blocks`
+fact for an input array, shows it readable there.
+
+This is what an input that may overlap the output needs: a store into the
+output may change the input's bytes, so no fact about the input's contents
+survives it, but its fact about the initial memory still bounds where the code
+may read. -/
+
+/-- Every address mapped in `m` is mapped in `m'`. -/
+def SubDom {w : Nat} (m m' : Mem w) : Prop := ∀ k, k ∈ m → k ∈ m'
+
+theorem SubDom.refl {w : Nat} (m : Mem w) : SubDom m m := fun _ h => h
+
+/-- A store keeps every address mapped. -/
+theorem SubDom.storeInt {w : Nat} {m m' : Mem w} (h : SubDom m m') (addr : BitVec w)
+    (n : Nat) (v : Int) : SubDom m (m'.storeInt addr n v) := fun k hk => by
+  simp only [Mem.storeInt, Mem.storeBytes, ExtHashMap.union_eq]
+  exact ExtHashMap.mem_union_of_left (h k hk)
+
+/-- A load that succeeds in `m` succeeds in `m'`. -/
+theorem SubDom.loadInt_isSome {w : Nat} {m m' : Mem w} {addr : BitVec w} {n : Nat}
+    (h : SubDom m m') (hs : (m.loadInt addr n).isSome = true) :
+    (m'.loadInt addr n).isSome = true := by
+  simp only [Mem.loadInt, Option.isSome_map, Mem.loadBytes, List.allSome_isSome_iff,
+    List.forall_mem_map] at hs ⊢
+  intro i hi
+  have hk := hs i hi
+  rw [get?_eq_getElem?, isSome_getElem?_iff_mem] at hk ⊢
+  exact h _ hk
+
+grind_pattern SubDom.refl => SubDom m m
+grind_pattern SubDom.storeInt => SubDom m m', Mem.storeInt m' addr n v
+grind_pattern SubDom.loadInt_isSome => SubDom m m', Mem.loadInt m' addr n
 
 end Mem

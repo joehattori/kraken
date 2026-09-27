@@ -329,7 +329,8 @@ def parseMemory : Parser (Width × AddrExpr) := do
   let _ ← pchar '('
 
   skipHWs
-  let (w1, base) ← parseRegOrRipW
+  -- The base register is optional, as in `-0x40(,%ecx,4)`.
+  let base ← (do let b ← parseRegOrRipW; pure (some b)) <|> pure none
   -- Check for index register
   let idx ← (do
     skipHWs
@@ -357,20 +358,25 @@ def parseMemory : Parser (Width × AddrExpr) := do
   skipHWs
   let _ ← pchar ')'
   -- Some adapters between the parsed components and the expected dependent
-  -- pairs:
-  let w ← match w1, idx with
-    | w1, .some (w2, _) =>
+  -- pairs. Without a base, the index register gives the address width.
+  let w ← match base, idx with
+    | .some (w1, _), .some (w2, _) =>
       if w1 ≠ w2 then
         fail "type mismatch in memory addressing operands: base ({w1}) and index ({w2}) have different widths"
       else
         .pure w1
-    | w1, .none =>
+    | .some (w1, _), .none =>
       .pure w1
+    | .none, .some (w2, _) =>
+      .pure w2
+    | .none, .none =>
+      fail "memory operand needs a base or an index register"
+  let base := Option.map Prod.snd base
   let idx := Option.map (fun (_, idx) => ⟨idx, scale⟩) idx
 
   -- Handle rip-relative addressing (like parseRelRegOrMem below).
   let disp := match base, disp with
-    | .rip, .label l => .sub (.label l) .after_current_instruction
+    | .some .rip, .label l => .sub (.label l) .after_current_instruction
     | _, _ => disp
 
   pure (w, { base, idx, disp })
@@ -823,6 +829,9 @@ def parseInstr : Parser Instr := do
 
   | "subps" =>
     commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .subps
+
+  | "mulps" =>
+    commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .mulps
 
   | "xorps" =>
     commaSeparatedAvx .none parseAvxRegOrMem parseAvxRegOrMem .xorps

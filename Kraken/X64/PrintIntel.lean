@@ -171,6 +171,7 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .movaps dst src => s!"movaps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .subps dst src => s!"subps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .addps dst src => s!"addps {dst.toStr addr_w}, {src.toStr addr_w}"
+  | .mulps dst src => s!"mulps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .xorps dst src => s!"xorps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .vmovaps dst src => s!"vmovaps {dst.toStr addr_w}, {src.toStr addr_w}"
   | .vxorps dst src1 src2 => s!"vxorps {dst}, {src1}, {src2.toStr addr_w}"
