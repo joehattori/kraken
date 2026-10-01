@@ -242,6 +242,15 @@ def Width.scaleFactor (k : Width) : BitVec 64 := BitVec.ofNat 64 k.bytes
 @[simp, grind =] theorem Width.scaleFactor_W32 : Width.W32.scaleFactor = 4#64 := rfl
 @[simp, grind =] theorem Width.scaleFactor_W64 : Width.W64.scaleFactor = 8#64 := rfl
 
+/-- `v.toInt`, behind a plain definition that `grind`'s integer solver does not
+look into. The solver treats every `BitVec.toInt` term as a link between the
+bit-vector and an integer, and on a value computed by a chain of additions it
+splits on the wraparound of each one, exponentially in the length of the chain.
+The store rules hand the stored value to `Mem.storeInt` through this wrapper:
+the separation-logic facts about a store never look at the value. A proof
+that does need the value unfolds it with `simp only [BitVec.toIntOpaque]`. -/
+def BitVec.toIntOpaque {w : Nat} (v : BitVec w) : Int := v.toInt
+
 /-- The address a `disp(base,index,scale)` operand computes, at 64-bit address
 size: the base register plus the index register times the scale, plus the
 displacement. -/
@@ -1092,12 +1101,14 @@ tail runs with them in the register. -/
     exact hk v hv _ hpl'
 
 /-- `mov %r, d(%b,%i,k)` : the 8 bytes at `b + i * k + d` must be owned
-(readable); the tail runs on the memory with the register stored there. -/
+(readable); the tail runs on the memory with the register stored there. The
+value goes through `BitVec.toIntOpaque`, which keeps it out of `grind`'s
+integer solver. -/
 @[spec] theorem MachineWP.mov_store_sib_disp_spec (r b i : Reg64) (k : Width) (d : Int64) :
     ⦃ fun s =>
         let a := s.regs.get64 b + s.regs.get64 i * k.scaleFactor + d.toBitVec
         ((Mem.loadInt s.dmem a 8).isSome = true)
-          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 8 (s.regs.get64 r).toInt } ⦄
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 8 (s.regs.get64 r).toIntOpaque } ⦄
       (Directive.instr (.regular .W64 .W64
           (.mov (.mem ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩)
             (.regOrMem (.reg (.low r .W64))))) :: p)

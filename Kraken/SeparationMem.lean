@@ -303,6 +303,31 @@ theorem Blocks.Inside.ptr_add {w : Nat} {a p x : BitVec w} {n len : Nat}
   have := Nat.mod_le ((p - a).toNat + x.toNat) (2 ^ w)
   omega
 
+/-- An access at an offset `x` from an end pointer `a` into a block of length
+`len` starting at `a - b` (negative-index loop addressing, where `x` counts up
+from `-b` toward `0`). -/
+theorem Blocks.Inside.sub_base_add {w : Nat} {a b x : BitVec w} {n len : Nat}
+    {bs : List (BitVec w × Nat)} (h : (b + x).toNat + n ≤ len) :
+    Blocks.Inside (a + x) n ((a - b, len) :: bs) :=
+  Or.inl (by
+    have hsub : a + x - (a - b) = b + x := by
+      rw [BitVec.add_comm a x, BitVec.sub_eq_add_neg, BitVec.sub_eq_add_neg,
+        BitVec.neg_add, BitVec.sub_eq_add_neg, BitVec.neg_neg,
+        BitVec.add_assoc x a (-a + b), ← BitVec.add_assoc a (-a) b,
+        ← BitVec.sub_eq_add_neg, BitVec.sub_self, BitVec.zero_add,
+        BitVec.add_comm x b]
+    rw [hsub]
+    exact h)
+
+/-- An access at two offsets `c` and `x` from an end pointer `a` into a block of
+length `len` starting at `a - b`, such as `d(%rdi,%rcx,1)` when `%rdi` points to
+the end of the buffer `a - b` and `%rcx` is a negative byte index. -/
+theorem Blocks.Inside.sub_base_add_add {w : Nat} {a b c x : BitVec w} {n len : Nat}
+    {bs : List (BitVec w × Nat)} (h : (b + c + x).toNat + n ≤ len) :
+    Blocks.Inside (a + c + x) n ((a - b, len) :: bs) := by
+  rw [BitVec.add_assoc a c x]
+  exact Blocks.Inside.sub_base_add (by rwa [← BitVec.add_assoc b c x])
+
 /-- A load inside one of the blocks succeeds. -/
 theorem Blocks.loadInt_isSome {w : Nat} {bs : List (BitVec w × Nat)} {F : Mem w → Prop}
     {m : Mem w} {addr : BitVec w} {n : Nat}
@@ -354,6 +379,8 @@ grind_pattern Blocks.Inside.base => Blocks.Inside a n ((a, len) :: bs)
 grind_pattern Blocks.Inside.base_add => Blocks.Inside (a + x) n ((a, len) :: bs)
 grind_pattern Blocks.Inside.base_add_add => Blocks.Inside (a + c + x) n ((a, len) :: bs)
 grind_pattern Blocks.Inside.add_base_add => Blocks.Inside (c + a + x) n ((a, len) :: bs)
+grind_pattern Blocks.Inside.sub_base_add => Blocks.Inside (a + x) n ((a - b, len) :: bs)
+grind_pattern Blocks.Inside.sub_base_add_add => Blocks.Inside (a + c + x) n ((a - b, len) :: bs)
 -- The pointer rule also needs the offset `p - a` among the terms, which an
 -- invariant about the pointer puts there. Otherwise any pointer into any block
 -- would match, and ruling out the wrong blocks swamps the arithmetic.
