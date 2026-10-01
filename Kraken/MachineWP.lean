@@ -232,6 +232,34 @@ theorem AddrExpr.zeroExtend_interp_sib1_disp [Labels] (b i : Reg64) (d : Int64)
   show BitVec.ofInt 64 _ = _
   simp [Width.bytes, BitVec.ofInt_add, BitVec.ofInt_toInt]
 
+/-- The factor a SIB scale multiplies the index by, as a 64-bit word. It is not
+reducible, so that the goals `vcgen` leaves show `k.scaleFactor` rather than
+the unfolded `match` of `Width.bytes`; the equations below give its values. -/
+def Width.scaleFactor (k : Width) : BitVec 64 := BitVec.ofNat 64 k.bytes
+
+@[simp, grind =] theorem Width.scaleFactor_W8 : Width.W8.scaleFactor = 1#64 := rfl
+@[simp, grind =] theorem Width.scaleFactor_W16 : Width.W16.scaleFactor = 2#64 := rfl
+@[simp, grind =] theorem Width.scaleFactor_W32 : Width.W32.scaleFactor = 4#64 := rfl
+@[simp, grind =] theorem Width.scaleFactor_W64 : Width.W64.scaleFactor = 8#64 := rfl
+
+/-- The address a `disp(base,index,scale)` operand computes, at 64-bit address
+size: the base register plus the index register times the scale, plus the
+displacement. -/
+theorem AddrExpr.zeroExtend_interp_sib_disp [Labels] (b i : Reg64) (k : Width) (d : Int64)
+    (regs : Reg64s) (rng : Std.Rco Int64) :
+    ((AddrExpr.interp (address_size := .mk .W64)
+        (a := ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩) regs rng).zeroExtend 64)
+      = regs.get64 b + regs.get64 i * k.scaleFactor + d.toBitVec := by
+  simp only [AddrExpr.interp, ConstExpr.interp, BitVec.toAddressSize, Width.scaleFactor]
+  have htake : ∀ x : BitVec 64, x.take Width.W64.bits = x := by
+    intro x
+    simp [BitVec.take, BitVec.extractLsb']
+  rw [htake, htake]
+  have hsigned : ∀ x : BitVec 64, x.signed = x.toInt := fun _ => rfl
+  rw [hsigned, hsigned]
+  show BitVec.ofInt 64 _ = _
+  simp [BitVec.ofInt_add, BitVec.ofInt_mul, BitVec.ofInt_toInt, BitVec.ofInt_natCast]
+
 /-- The address a `disp(base)` expression computes, at 64-bit address size:
 the base register plus the displacement. -/
 theorem AddrExpr.zeroExtend_interp_base_disp [L : Labels] (b : Reg64) (d : Int64)
@@ -986,6 +1014,140 @@ readable, at any alignment; the tail runs with `xmm1 * mem` in `xmm0`. -/
     wp_step
     simp only [MachineData.loadAvx, AddrExpr.zeroExtend_interp_sib1_disp, hv, AvxWidth.bytes,
       Bool.false_and, Bool.false_eq_true, ite_false]
+    exact hk v hv _ hpl'
+
+/-! ### Integer multi-precision arithmetic
+
+The instruction shapes of bignum code: the one-operand `mul`, whose 128-bit
+product lands in `rdx:rax`, carry propagation with `adc $i`, and 64-bit loads,
+stores and additions at a `d(%b,%i,k)` operand. A memory operand needs the
+8 bytes at its address readable, at any alignment. -/
+
+/-- `mul %r` : `rdx:rax` gets the 128-bit product of `rax` and `r`. `cf` and
+`of` say whether the high half is nonzero; the other flags are undefined. -/
+@[spec] theorem MachineWP.mul_reg_spec (asz : Width) (r : Reg64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 .rax
+        let b := s.regs.get64 r
+        let v := a * b
+        let vn := a.unsigned * b.unsigned
+        ∀ sf zf af pf : Bool,
+          WP.wp p Q E
+            { s with
+                regs := (s.regs.set64 .rax v).set64 .rdx (BitVec.ofInt 64 (vn >>> 64)),
+                status := { cf := v.unsigned != vn, pf, af, zf, sf,
+                            of := v.unsigned != vn } } ⦄
+      (Directive.instr (.regular asz .W64 (.mul (.reg (.low r .W64)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    intro sf zf af pf
+    exact h sf zf af pf _ hpl'
+
+/-- `adc $i, %r` : the register gets itself plus the immediate plus the carry. -/
+@[spec] theorem MachineWP.adc_reg_imm_spec (asz : Width) (r : Reg64) (i : Int64) :
+    ⦃ fun s =>
+        let a := BitVec.setWidth 64 i.toBitVec
+        let b := s.regs.get64 r
+        let c := s.status.cf
+        let v := a + b + BitVec.ofNat 64 c.toNat
+        WP.wp p Q E
+          { s with
+              regs := s.regs.set64 r v,
+              status := StatusFlags.from_result v
+                { cf := v.unsigned != a.unsigned + b.unsigned + c,
+                  af := (v.take 4).unsigned != (a.take 4).unsigned + (b.take 4).unsigned + c,
+                  of := v.signed != a.signed + b.signed + c } } ⦄
+      (Directive.instr (.regular asz .W64 (.adc (.reg (.low r .W64)) (.imm (.int64 i)))) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by wp_step; exact hP)
+
+/-- `mov d(%b,%i,k), %r` : the 8 bytes at `b + i * k + d` must be readable; the
+tail runs with them in the register. -/
+@[spec] theorem MachineWP.mov_load_sib_disp_spec (r b i : Reg64) (k : Width) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i * k.scaleFactor + d.toBitVec
+        ((Mem.loadInt s.dmem a 8).isSome = true)
+          ⊓ (∀ v, Mem.loadInt s.dmem a 8 = some v →
+            WP.wp p Q E { s with regs := s.regs.set64 r (BitVec.ofInt 64 v) }) ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.mov (.reg (.low r .W64))
+            (.regOrMem (.mem ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.load, AddrExpr.zeroExtend_interp_sib_disp, Width.bytes, hv,
+      Effects.All]
+    exact hk v hv _ hpl'
+
+/-- `mov %r, d(%b,%i,k)` : the 8 bytes at `b + i * k + d` must be owned
+(readable); the tail runs on the memory with the register stored there. -/
+@[spec] theorem MachineWP.mov_store_sib_disp_spec (r b i : Reg64) (k : Width) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + s.regs.get64 i * k.scaleFactor + d.toBitVec
+        ((Mem.loadInt s.dmem a 8).isSome = true)
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 8 (s.regs.get64 r).toInt } ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.mov (.mem ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩)
+            (.regOrMem (.reg (.low r .W64))))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.store, AddrExpr.zeroExtend_interp_sib_disp, Width.bytes, hv,
+      Effects.All]
+    exact hk _ hpl'
+
+/-- `add d(%b,%i,k), %r` : the 8 bytes at `b + i * k + d` must be readable; the
+register gets itself plus them, with the flags of the sum. -/
+@[spec] theorem MachineWP.add_reg_load_sib_disp_spec (r b i : Reg64) (k : Width)
+    (d : Int64) :
+    ⦃ fun s =>
+        let ad := s.regs.get64 b + s.regs.get64 i * k.scaleFactor + d.toBitVec
+        ((Mem.loadInt s.dmem ad 8).isSome = true)
+          ⊓ (∀ m, Mem.loadInt s.dmem ad 8 = some m →
+            let a := BitVec.ofInt 64 m
+            let b := s.regs.get64 r
+            let v := a + b
+            WP.wp p Q E
+              { s with
+                  regs := s.regs.set64 r v,
+                  status := StatusFlags.from_result v
+                    { cf := v.unsigned != a.unsigned + b.unsigned,
+                      af := (v.take 4).unsigned != (a.take 4).unsigned + (b.take 4).unsigned,
+                      of := v.signed != a.signed + b.signed } }) ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.add (.reg (.low r .W64))
+            (.regOrMem (.mem ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩)))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.load, AddrExpr.zeroExtend_interp_sib_disp, Width.bytes, hv,
+      Effects.All]
     exact hk v hv _ hpl'
 
 /-- A data cell does not run: the machine faults on reaching it. Its rule asks
