@@ -403,22 +403,21 @@ structure Sqr4xInnerState where
   carry1 : BitVec 64
   memory : DataMem
 
-/-- Reference computation for `k` pairs of limbs. `x` and `t` describe the
+/-- Reference computation for `k` pairs of limbs. `x` and `t` are the arrays of
 original input and accumulator limbs; `base` is the first output address.
 Each step uses the natural-number specification `sqr4xInnerResult`. -/
-def sqr4xInnerFold (a0 a1 : BitVec 64) (x t : Nat → Int) (base : BitVec 64)
+def sqr4xInnerFold (a0 a1 : BitVec 64) (x t : List (BitVec 64)) (base : BitVec 64)
     (initial : Sqr4xInnerState) : Nat → Sqr4xInnerState
   | 0 => initial
   | k + 1 =>
     let s := sqr4xInnerFold a0 a1 x t base initial k
     let r := sqr4xInnerResult a0 a1 s.previous s.carry0 s.carry1
-      (BitVec.ofInt 64 (x (2 * k))) (BitVec.ofInt 64 (x (2 * k + 1)))
-      (BitVec.ofInt 64 (t (2 * k))) (BitVec.ofInt 64 (t (2 * k + 1)))
-    ⟨BitVec.ofInt 64 (x (2 * k + 1)), r.carry0, r.carry1,
+      (x.getD (2 * k) 0) (x.getD (2 * k + 1) 0) (t.getD (2 * k) 0) (t.getD (2 * k + 1) 0)
+    ⟨x.getD (2 * k + 1) 0, r.carry0, r.carry1,
       (s.memory.storeInt (base + BitVec.ofNat 64 (16 * k)) 8 r.out0.toIntOpaque).storeInt
         (base + BitVec.ofNat 64 (16 * k) + 8) 8 r.out1.toIntOpaque⟩
 
-private theorem fold_load_unchanged (a0 a1 : BitVec 64) (x t : Nat → Int)
+private theorem fold_load_unchanged (a0 a1 : BitVec 64) (x t : List (BitVec 64))
     (base : BitVec 64) (initial : Sqr4xInnerState) (k : Nat) (addr : BitVec 64)
     (hdisj : ∀ i < 8, ∀ j < 16 * k,
       addr + BitVec.ofNat 64 i ≠ base + BitVec.ofNat 64 j) :
@@ -450,13 +449,13 @@ private theorem word_before_disjoint (base : BitVec 64) (k j : Nat)
 /-- Expected state after `k` of the `n` two-limb iterations, starting with the
 entry `%rax`, `%r11`, and `%r13`. The input window starts `16 * n` bytes before
 `%rsi`, and the output window starts `16 * n` bytes before `%rdi`. -/
-def sqr4xInnerPrefix (d : MachineData) (n : Nat) (x t : Nat → Int) (k : Nat) :
+def sqr4xInnerPrefix (d : MachineData) (n : Nat) (x t : List (BitVec 64)) (k : Nat) :
     Sqr4xInnerState :=
   sqr4xInnerFold (d.regs.get64 .r14) (d.regs.get64 .r15) x t
     (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n))
     ⟨d.regs.get64 .rax, d.regs.get64 .r11, d.regs.get64 .r13, d.dmem⟩ k
 
-@[local grind =] private theorem prefix_zero (d : MachineData) (n : Nat) (x t : Nat → Int) :
+@[local grind =] private theorem prefix_zero (d : MachineData) (n : Nat) (x t : List (BitVec 64)) :
     sqr4xInnerPrefix d n x t 0 =
       ⟨d.regs.get64 .rax, d.regs.get64 .r11, d.regs.get64 .r13, d.dmem⟩ := rfl
 
@@ -464,7 +463,7 @@ def sqr4xInnerPrefix (d : MachineData) (n : Nat) (x t : Nat → Int) (k : Nat) :
 private def innerOffset (n k : Nat) : BitVec 64 :=
   BitVec.ofNat 64 (16 * k) - BitVec.ofNat 64 (16 * n)
 
-private abbrev innerMatches (d : MachineData) (n : Nat) (x t : Nat → Int)
+private abbrev innerMatches (d : MachineData) (n : Nat) (x t : List (BitVec 64))
     (k : Nat) (s : MachineData) : Prop :=
   s.regs.get64 .rsi = d.regs.get64 .rsi ∧
   s.regs.get64 .rdi = d.regs.get64 .rdi ∧
@@ -479,32 +478,87 @@ private abbrev innerMatches (d : MachineData) (n : Nat) (x t : Nat → Int)
 /-- Number of completed pairs, recovered from the running byte offset. -/
 private def innerIndex (n : Nat) (rcx : BitVec 64) : Nat := n - (2 ^ 64 - rcx.toNat) / 16
 
-private abbrev innerInvariant (d : MachineData) (n : Nat) (x t : Nat → Int)
+private abbrev innerInvariant (d : MachineData) (n : Nat) (x t : List (BitVec 64))
     (s : MachineData) : Prop :=
   innerIndex n (s.regs.get64 .rcx) < n ∧ innerMatches d n x t (innerIndex n (s.regs.get64 .rcx)) s
 
-private theorem prefix_loads (d : MachineData) (n : Nat) (x t : Nat → Int)
-    (hbound : 16 * n < 2 ^ 63)
-    (hx : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (x j))
-    (ht : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (t j))
-    (hdisj : ∀ i < 16 * n, ∀ j < 16 * n,
-      d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 i ≠
-      d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 j)
+/-! ### Limb arrays in memory
+
+An array of limbs `xs` occupies the little-endian bytes
+`xs.flatMap fun w => Int.toBytes 8 w.toInt`. A separating conjunction of the two
+windows gives every limb load and the bytewise disjointness of the windows. -/
+
+private theorem length_flatMap_limbs (xs : List (BitVec 64)) :
+    (xs.flatMap fun w => Int.toBytes 8 w.toInt).length = 8 * xs.length := by
+  induction xs with
+  | nil => rfl
+  | cons w xs ih =>
+    simp only [List.flatMap_cons, List.length_append, Int.toBytes_length, ih, List.length_cons]
+    omega
+
+private theorem limb_of_flatMap (xs : List (BitVec 64)) (j : Nat) (hj : j < xs.length) :
+    ((xs.flatMap fun w => Int.toBytes 8 w.toInt).drop (8 * j)).take 8
+      = Int.toBytes 8 (xs.getD j 0).toInt := by
+  induction xs generalizing j with
+  | nil => simp at hj
+  | cons w xs ih =>
+    cases j with
+    | zero =>
+      simp only [List.flatMap_cons, Nat.mul_zero, List.drop_zero, List.getD_cons_zero]
+      exact List.take_left' (Int.toBytes_length _ _)
+    | succ j =>
+      rw [List.flatMap_cons, show 8 * (j + 1) = 8 + 8 * j by omega, ← List.drop_drop,
+        List.drop_left' (Int.toBytes_length _ _), List.getD_cons_succ]
+      exact ih j (by simp only [List.length_cons] at hj; omega)
+
+private theorem load_limb {xs : List (BitVec 64)} {a : BitVec 64} {F : DataMem → Prop}
+    {m : DataMem} (h : m =⋆ Eq ((xs.flatMap fun w => Int.toBytes 8 w.toInt).At a) ⋆ F)
+    (hlen : 8 * xs.length < 2 ^ 64) (j : Nat) (hj : j < xs.length) :
+    m.loadInt (a + BitVec.ofNat 64 (8 * j)) 8
+      = some (Int.ofBytes (Int.toBytes 8 (xs.getD j 0).toInt)) := by
+  have hoff : (a + BitVec.ofNat 64 (8 * j) - a).toNat = 8 * j := by
+    rw [BitVec.add_comm a, BitVec.add_sub_cancel, BitVec.toNat_ofNat]; omega
+  rw [Mem.loadInt_slice h (by rw [hoff, length_flatMap_limbs]; omega)
+    (by rw [length_flatMap_limbs]; omega), hoff, limb_of_flatMap xs j hj]
+
+private theorem sep_At_ne {X T : List UInt8} {a b : BitVec 64} {R : DataMem → Prop}
+    {m : DataMem} (h : m =⋆ Eq (X.At a) ⋆ (Eq (T.At b) ⋆ R)) :
+    ∀ i < X.length, ∀ j < T.length, a + BitVec.ofNat 64 i ≠ b + BitVec.ofNat 64 j := by
+  intro i hi j hj heq
+  obtain ⟨_, _, -, hAB, rfl, _, D, rfl, -, rfl, -⟩ := h
+  have hmem : a + BitVec.ofNat 64 i ∈ (X.At a).inter ((T.At b).union D) :=
+    mem_inter_iff.2 ⟨(mem_At_iff _ _ _).2 ⟨i, hi, rfl⟩,
+      mem_union_iff.2 (Or.inl ((mem_At_iff _ _ _).2 ⟨j, hj, heq⟩))⟩
+  rw [hAB] at hmem
+  exact not_mem_empty hmem
+
+/-- Every limb of `x` read as an `Int`, as the loads of the loop return it. -/
+@[local grind =] private theorem ofInt_limb (v : BitVec 64) :
+    BitVec.ofInt 64 (Int.ofBytes (Int.toBytes 8 v.toInt)) = v :=
+  BitVec.ofInt_ofBytes_toBytes 64 8 rfl v
+
+private theorem prefix_loads (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 16 * n < 2 ^ 63)
+    (hxl : x.length = 2 * n) (htl : t.length = 2 * n)
+    (hmem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n))) ⋆ R))
     (k j : Nat) (hkj : 2 * k ≤ j) (hj : j < 2 * n) :
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (x j) ∧
+      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (Int.ofBytes (Int.toBytes 8 (x.getD j 0).toInt)) ∧
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (t j) := by
+      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (Int.ofBytes (Int.toBytes 8 (t.getD j 0).toInt)) := by
   constructor
   · rw [sqr4xInnerPrefix, fold_load_unchanged]
-    · exact hx j hj
+    · exact load_limb hmem (by omega) j (by omega)
     · intro i hi l hl
       simpa [BitVec.ofNat_add, BitVec.add_assoc] using
-        hdisj (8 * j + i) (by omega) l (by omega)
+        sep_At_ne hmem (8 * j + i) (by rw [length_flatMap_limbs]; omega) l
+          (by rw [length_flatMap_limbs]; omega)
   · rw [sqr4xInnerPrefix, fold_load_unchanged]
-    · exact ht j hj
+    · exact load_limb (by rwa [sep_comm_l] at hmem) (by omega) j (by omega)
     · exact word_before_disjoint _ k j (by omega) (by omega)
 
 private theorem offset_toNat (n k : Nat) (hk : k < n) (hn : 16 * n < 2 ^ 63) :
@@ -543,53 +597,62 @@ private theorem offset_continue (n k : Nat) (hk : k < n) (hn : 16 * n < 2 ^ 63)
 local grind_pattern offset_continue => innerOffset n k + 16
 
 /-- One step of the arithmetic fold, using the same addresses as the assembly. -/
-@[local grind =] private theorem prefix_step (d : MachineData) (n : Nat) (x t : Nat → Int) (k : Nat) :
+@[local grind =] private theorem prefix_step (d : MachineData) (n : Nat) (x t : List (BitVec 64)) (k : Nat) :
     sqr4xInnerPrefix d n x t (k + 1) =
       let s := sqr4xInnerPrefix d n x t k
       let r := sqr4xInnerResult (d.regs.get64 .r14) (d.regs.get64 .r15)
         s.previous s.carry0 s.carry1
-        (BitVec.ofInt 64 (x (2 * k))) (BitVec.ofInt 64 (x (2 * k + 1)))
-        (BitVec.ofInt 64 (t (2 * k))) (BitVec.ofInt 64 (t (2 * k + 1)))
-      ⟨BitVec.ofInt 64 (x (2 * k + 1)), r.carry0, r.carry1,
+        (x.getD (2 * k) 0) (x.getD (2 * k + 1) 0)
+        (t.getD (2 * k) 0) (t.getD (2 * k + 1) 0)
+      ⟨x.getD (2 * k + 1) 0, r.carry0, r.carry1,
         (s.memory.storeInt (d.regs.get64 .rdi + innerOffset n k) 8 r.out0.toIntOpaque).storeInt
           (d.regs.get64 .rdi + innerOffset n k + 8) 8 r.out1.toIntOpaque⟩ := by
   simp only [sqr4xInnerPrefix, sqr4xInnerFold, innerOffset]
   congr 3 <;> grind
 
 /-- The next four reads still see the original limbs. Indexing this fact by the
-entry counter lets `grind` match it to the current loop state. -/
-private theorem prefix_iteration_loads (d : MachineData) (n : Nat) (x t : Nat → Int)
-    (hbound : 16 * n < 2 ^ 63)
-    (hx : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (x j))
-    (ht : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (t j))
-    (hdisj : ∀ i < 16 * n, ∀ j < 16 * n,
-      d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 i ≠
-      d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 j)
+entry counter lets `grind` match it to the current loop state; the frame `R` is
+bound by the memory fact, so the lemma fires from the theorem's hypotheses. -/
+private theorem prefix_iteration_loads (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 16 * n < 2 ^ 63)
+    (hxl : x.length = 2 * n) (htl : t.length = 2 * n)
+    (hmem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n))) ⋆ R))
     (s : MachineData) (hk : innerIndex n (s.regs.get64 .rcx) < n) :
     let k := innerIndex n (s.regs.get64 .rcx)
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rsi + innerOffset n k) 8 = some (x (2 * k)) ∧
+      (d.regs.get64 .rsi + innerOffset n k) 8 = some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * k) 0).toInt)) ∧
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rsi + innerOffset n k + 8) 8 = some (x (2 * k + 1)) ∧
+      (d.regs.get64 .rsi + innerOffset n k + 8) 8 = some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * k + 1) 0).toInt)) ∧
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rdi + innerOffset n k) 8 = some (t (2 * k)) ∧
+      (d.regs.get64 .rdi + innerOffset n k) 8 = some (Int.ofBytes (Int.toBytes 8 (t.getD (2 * k) 0).toInt)) ∧
     (sqr4xInnerPrefix d n x t k).memory.loadInt
-      (d.regs.get64 .rdi + innerOffset n k + 8) 8 = some (t (2 * k + 1)) := by
+      (d.regs.get64 .rdi + innerOffset n k + 8) 8 = some (Int.ofBytes (Int.toBytes 8 (t.getD (2 * k + 1) 0).toInt)) := by
   let k := innerIndex n (s.regs.get64 .rcx)
-  have h0 := prefix_loads d n x t hbound hx ht hdisj k (2 * k) (by omega) (by omega)
-  have h1 := prefix_loads d n x t hbound hx ht hdisj k (2 * k + 1) (by omega) (by omega)
+  have h0 := prefix_loads d n x t R hbound hxl htl hmem k (2 * k) (by omega) (by omega)
+  have h1 := prefix_loads d n x t R hbound hxl htl hmem k (2 * k + 1) (by omega) (by omega)
   grind only [innerOffset, BitVec.ofNat_add]
+
+-- Fire the load lemma on the loop state's fold, with the frame from the memory fact.
+local grind_pattern prefix_iteration_loads =>
+  sqr4xInnerPrefix d n x t (innerIndex n (s.regs.get64 .rcx)),
+  Std.ExtHashMap.sep (Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n))))
+    (Std.ExtHashMap.sep (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n)))) R) d.dmem
 
 include layout validLayout
 
 /-- Functional correctness of the entire inner loop for `n` pairs of limbs.
 
-The load hypotheses describe the original input and accumulator windows. They
-also provide memory safety. The windows are bytewise disjoint, so earlier output
-stores cannot change later input loads. Addresses may wrap around the address
-space; the length bound ensures that distinct offsets within a window do not alias.
+The arrays `x` and `t` of `2 * n` limbs are the original input and accumulator
+windows, owned in a separating conjunction; ownership provides memory safety and
+makes the windows disjoint, so earlier output stores cannot change later input
+loads. Addresses may wrap around the address space; the length bound ensures that
+distinct offsets within a window do not alias.
 
 The result is the pure arithmetic fold `sqr4xInnerPrefix ... n`, including both
 carry chains and every output write. The initial previous limb is the entry
@@ -599,22 +662,21 @@ the fold takes `previous` from the preceding pair's second input limb.
 `MachineWP.cfg` supplies loop induction and termination. `vcgen` processes every
 instruction after `cfg_cases` unfolds the program. Local `grind` rules expand the
 arithmetic fold and connect the counter to its index and termination measure.
-The memory lemma is supplied to `finish` with the original load and disjointness
-hypotheses already instantiated, keeping its quantified premises out of the search.
+The memory lemma `prefix_iteration_loads` fires on the loop state's fold and the
+ownership hypothesis, which supplies the frame.
 
 This proof shares arithmetic and memory lemmas with the one-iteration proof and
 shares the label table, variant, and code environment with `sqr4x_inner_correct`.
 Its stronger invariant tracks the values that the safety postcondition omits. -/
-theorem sqr4x_inner_prog_correct (d : MachineData) (n : Nat) (x t : Nat → Int)
+theorem sqr4x_inner_prog_correct (d : MachineData) (n : Nat) (x t : List (BitVec 64))
     (h_rbp : d.regs.get64 .rbp = 0#64 - BitVec.ofNat 64 (16 * n))
     (h_pos : 0 < n) (h_bound : 16 * n < 2 ^ 63)
-    (h_x : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (x j))
-    (h_t : ∀ j < 2 * n, d.dmem.loadInt
-      (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 (8 * j)) 8 = some (t j))
-    (h_disjoint : ∀ i < 16 * n, ∀ j < 16 * n,
-      d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 i ≠
-      d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n) + BitVec.ofNat 64 j) :
+    (h_x_len : x.length = 2 * n) (h_t_len : t.length = 2 * n) (R : DataMem → Prop)
+    (h_mem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rdi - BitVec.ofNat 64 (16 * n))) ⋆ R)) :
     ⦃ fun s => s = d ⦄ sqr4x_inner_prog ⦃ fun _ s =>
       s.regs.get64 .rsi = d.regs.get64 .rsi ∧
       s.regs.get64 .rdi = d.regs.get64 .rdi ∧
@@ -628,7 +690,6 @@ theorem sqr4x_inner_prog_correct (d : MachineData) (n : Nat) (x t : Nat → Int)
   apply MachineWP.cfg (sqr4x_inner_table d (innerInvariant d n x t)) sqr4x_inner_var
   cfg_cases [sqr4x_inner_prog, sqr4x_inner_iteration]
   · vcgen simplifying_assumptions with finish
-  · vcgen simplifying_assumptions with
-      finish (splits := 0) [→ prefix_iteration_loads d n x t h_bound h_x h_t h_disjoint]
+  · vcgen simplifying_assumptions with finish (splits := 0)
 
 end Sqr4xInner
