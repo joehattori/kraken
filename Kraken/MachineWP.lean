@@ -651,6 +651,20 @@ program. -/
     simp only [AddrExpr.zeroExtend_interp_base_disp, BitVec.ofInt_toInt_int64]
     exact hP)
 
+/-- `lea d(%b,%i,k), %r` : the register gets the base plus the index times the
+scale, plus the displacement. -/
+@[spec] theorem MachineWP.lea_sib_disp_spec (r b i : Reg64) (k : Width) (d : Int64) :
+    ⦃ fun s => WP.wp p Q E { s with regs := (s.regs.set64 r
+        (s.regs.get64 b + s.regs.get64 i * k.scaleFactor + d.toBitVec)) } ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.lea (.low r .W64) ⟨some (.reg b), some ⟨i, k⟩, .int64 d⟩)) :: p)
+    ⦃ Q; E ⦄ :=
+  fallthrough_spec (fun s rng P hP => by
+    wp_step
+    simp only [AddrExpr.zeroExtend_interp_sib_disp]
+    exact hP)
+
+
 /-- `lea d(,%i32,s), %r` : a 32-bit address without a base register. The
 register gets the low half of the index times the scale, plus the displacement,
 wrapped to 32 bits and zero-extended; the upper half of the index is ignored. -/
@@ -1125,6 +1139,32 @@ integer solver. -/
     simp only [MachineData.store, AddrExpr.zeroExtend_interp_sib_disp, Width.bytes, hv,
       Effects.All]
     exact hk _ hpl'
+
+/-- `mov %r, d(%b)` : the 8 bytes at `b + d` must be owned (readable); the tail
+runs on the memory with the register stored there. The value goes through
+`BitVec.toIntOpaque`, which keeps it out of `grind`'s integer solver. -/
+@[spec] theorem MachineWP.mov_store_base_disp_spec (r b : Reg64) (d : Int64) :
+    ⦃ fun s =>
+        let a := s.regs.get64 b + d.toBitVec
+        ((Mem.loadInt s.dmem a 8).isSome = true)
+          ⊓ WP.wp p Q E { s with dmem := Mem.storeInt s.dmem a 8 (s.regs.get64 r).toIntOpaque } ⦄
+      (Directive.instr (.regular .W64 .W64
+          (.mov (.mem ⟨some (.reg b), none, .int64 d⟩)
+            (.regOrMem (.reg (.low r .W64))))) :: p)
+    ⦃ Q; E ⦄ :=
+  Triple.intro fun s h => by
+    simp only [meet_prop_eq_and] at h
+    obtain ⟨hsome, hk⟩ := h
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp hsome
+    intro pc hpl
+    obtain ⟨z, rest, hseg, hpl'⟩ := hpl
+    rw [after_instr hseg]
+    refine step_here hseg (Or.inl ?_)
+    wp_step
+    simp only [MachineData.store, AddrExpr.zeroExtend_interp_base_disp, BitVec.ofInt_toInt_int64,
+      Width.bytes, hv, Effects.All]
+    exact hk _ hpl'
+
 
 /-- `add d(%b,%i,k), %r` : the 8 bytes at `b + i * k + d` must be readable; the
 register gets itself plus them, with the flags of the sum. -/

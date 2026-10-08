@@ -33,6 +33,7 @@ Verified so far:
 * The complete inner loop: functional
   correctness against a fold of that arithmetic specification over the original
   input and accumulator limbs, for disjoint input and output windows.
+* `.Lsqr4x_outer`: termination, no faults, memory safety.
 -/
 
 open Kraken.X64.Parser
@@ -131,16 +132,19 @@ def sqr4x_inner_iteration : Program := parse("
     movq %r10,-8(%rdi,%rcx,1)
 ")
 
+/-- The `.Lsqr4x_inner` loop body, comparison, and back edge. -/
+def sqr4x_inner_loop : Program :=
+  parse(".Lsqr4x_inner:\n") ++ sqr4x_inner_iteration ++ parse("
+    cmpq $0,%rcx
+    jne .Lsqr4x_inner
+")
+
 /-- The inner loop, with index initialization and its comparison and back edge. -/
 def sqr4x_inner_prog : Program :=
   parse("
 start:
     lea (%rbp),%rcx
-.Lsqr4x_inner:
-") ++ sqr4x_inner_iteration ++ parse("
-    cmpq $0,%rcx
-    jne .Lsqr4x_inner
-")
+") ++ sqr4x_inner_loop
 
 /-! ### The proof -/
 
@@ -187,7 +191,7 @@ theorem sqr4x_inner_safe (d : MachineData) (L : Nat)
       sqr4x_inner_prog
     ⦃ fun _ s => s.dmem =⋆ Mem.Blocks [(d.regs.get64 .rdi - BitVec.ofNat 64 L, L)] ⋆ R ⦄ := by
   apply MachineWP.cfg (sqr4x_inner_table d (sqr4x_inner_safey d L R)) sqr4x_inner_var
-  cfg_cases [sqr4x_inner_prog, sqr4x_inner_iteration]
+  cfg_cases [sqr4x_inner_prog, sqr4x_inner_loop, sqr4x_inner_iteration]
   · vcgen simplifying_assumptions with finish
   · vcgen simplifying_assumptions with finish
 
@@ -688,8 +692,463 @@ theorem sqr4x_inner_prog_correct (d : MachineData) (n : Nat) (x t : List (BitVec
       s.regs.get64 .r13 = (sqr4xInnerPrefix d n x t n).carry1 ∧
       s.dmem = (sqr4xInnerPrefix d n x t n).memory ⦄ := by
   apply MachineWP.cfg (sqr4x_inner_table d (innerInvariant d n x t)) sqr4x_inner_var
-  cfg_cases [sqr4x_inner_prog, sqr4x_inner_iteration]
+  cfg_cases [sqr4x_inner_prog, sqr4x_inner_loop, sqr4x_inner_iteration]
   · vcgen simplifying_assumptions with finish
   · vcgen simplifying_assumptions with finish (splits := 0)
 
 end Sqr4xInner
+
+/-! ## `.Lsqr4x_outer`
+
+The outer loop of the cross-products (`x86_64-mont5-linux.S`, lines 1431–1534).
+Each outer iteration handles the next two limbs of `a`:
+
+1. `.Lsqr4x_outer` (preamble): loads the four edge limbs at negative offsets
+   `-32`, `-24`, `-16`, `-8` from `(%rsi, %rbp)`, computes the end of the
+   `tp[]` window `56(%rsp, %r9, 2) + %rbp - 32` into `%rdi`, accumulates the
+   three startup products into `-24(%rdi, %rbp)`, `-16(%rdi, %rbp)`, and
+   `-8(%rdi, %rbp)`, initializes `%rcx := %rbp`, and jumps into `.Lsqr4x_inner`.
+2. `.Lsqr4x_inner` + tail: runs `sqr4x_inner_iteration` as `%rcx` steps by `16`
+   bytes up to `0`, then stores the two final carry words at `(%rdi)` and
+   `8(%rdi)`, advances `%rbp` by `16`, and loops back to `.Lsqr4x_outer` until
+   `%rbp` reaches `0`.
+-/
+
+section Sqr4xOuter
+
+attribute [local grind norm] Width.scaleFactor_W16
+
+@[local grind norm] private theorem bv_add_zero (x : BitVec 64) : x + 0 = x := BitVec.add_zero x
+
+/-- The 40-instruction preamble at `.Lsqr4x_outer`, ending with `jmp .Lsqr4x_inner`. -/
+def sqr4x_outer_preamble : Program := parse("
+    movq -32(%rsi,%rbp,1),%r14
+    leaq 56(%rsp,%r9,2),%rdi
+    movq -24(%rsi,%rbp,1),%rax
+    leaq -32(%rdi,%rbp,1),%rdi
+    movq -16(%rsi,%rbp,1),%rbx
+    movq %rax,%r15
+
+    mulq %r14
+    movq -24(%rdi,%rbp,1),%r10
+    addq %rax,%r10
+    movq %rbx,%rax
+    adcq $0,%rdx
+    movq %r10,-24(%rdi,%rbp,1)
+    movq %rdx,%r11
+
+    mulq %r14
+    addq %rax,%r11
+    movq %rbx,%rax
+    adcq $0,%rdx
+    addq -16(%rdi,%rbp,1),%r11
+    movq %rdx,%r10
+    adcq $0,%r10
+    movq %r11,-16(%rdi,%rbp,1)
+
+    xorq %r12,%r12
+
+    movq -8(%rsi,%rbp,1),%rbx
+    mulq %r15
+    addq %rax,%r12
+    movq %rbx,%rax
+    adcq $0,%rdx
+    addq -8(%rdi,%rbp,1),%r12
+    movq %rdx,%r13
+    adcq $0,%r13
+
+    mulq %r14
+    addq %rax,%r10
+    movq %rbx,%rax
+    adcq $0,%rdx
+    addq %r12,%r10
+    movq %rdx,%r11
+    adcq $0,%r11
+    movq %r10,-8(%rdi,%rbp,1)
+
+    leaq (%rbp),%rcx
+    jmp .Lsqr4x_inner
+")
+
+/-- The 10-instruction tail after `.Lsqr4x_inner` that flushes the carry chain
+into `(%rdi)` and `8(%rdi)`, advances `%rbp`, and loops back to `.Lsqr4x_outer`. -/
+def sqr4x_outer_tail : Program := parse("
+    mulq %r15
+    addq %rax,%r13
+    adcq $0,%rdx
+    addq %r11,%r13
+    adcq $0,%rdx
+
+    movq %r13,(%rdi)
+    movq %rdx,%r12
+    movq %rdx,8(%rdi)
+
+    addq $16,%rbp
+    jnz .Lsqr4x_outer
+")
+
+/-- The complete `.Lsqr4x_outer` nested loop, entered via `jmp .Lsqr4x_outer`. -/
+def sqr4x_outer_prog : Program :=
+  parse("
+start:
+    jmp .Lsqr4x_outer
+.Lsqr4x_outer:
+") ++ sqr4x_outer_preamble ++ sqr4x_inner_loop ++ sqr4x_outer_tail
+
+/-! ### Memory bounds for outer-loop and inner-loop accesses -/
+
+private theorem toNat_ofNat_add_neg (M : Nat) (x : BitVec 64)
+    (hM : M < 2 ^ 64) (hx : 2 ^ 64 - M ≤ x.toNat) :
+    (BitVec.ofNat 64 M + x).toNat = M + x.toNat - 2 ^ 64 := by
+  have := x.isLt
+  rw [BitVec.toNat_add, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hM,
+    Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
+
+private theorem toNat_add_wrap (x y : BitVec 64) (h : 2 ^ 64 ≤ x.toNat + y.toNat) :
+    (x + y).toNat = x.toNat + y.toNat - 2 ^ 64 := by
+  have := x.isLt; have := y.isLt
+  rw [BitVec.toNat_add, Nat.mod_eq_sub_mod h, Nat.mod_eq_of_lt (by omega)]
+
+private theorem sub_a_iv (rsi b c rbp d : BitVec 64) :
+    (rsi + rbp + d) - (rsi - (b + c)) = (b + (c + d)) + rbp := by grind
+
+private theorem sub_a_inner_0_iv (rsi b c rcx : BitVec 64) :
+    (rsi + rcx) - (rsi - (b + c)) = (b + c) + rcx := by grind
+
+private theorem sub_a_inner_8_iv (rsi b c rcx : BitVec 64) :
+    (rsi + rcx + 8#64) - (rsi - (b + c)) = (b + (c + 8#64)) + rcx := by grind
+
+private theorem sub_tp_preamble_iv (base b c rbp d : BitVec 64) :
+    (base + rbp + (-32#64) + rbp + d) - (base - (b + c)) =
+      (b + (c + (-32#64) + d)) + (rbp + rbp) := by grind
+
+private theorem sub_tp_inner_0_iv (base b c rbp rcx : BitVec 64) :
+    (base + rbp + (-32#64) + rcx) - (base - (b + c)) =
+      (b + (c + (-32#64))) + (rbp + rcx) := by grind
+
+private theorem sub_tp_inner_8_iv (base b c rbp rcx : BitVec 64) :
+    (base + rbp + (-32#64) + rcx + 8#64) - (base - (b + c)) =
+      (b + (c + (-32#64) + 8#64)) + (rbp + rcx) := by grind
+
+private theorem sub_tp_inner_16_sub_8_iv (base b c rbp rcx : BitVec 64) :
+    (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) - (base - (b + c)) =
+      (b + (c + (-32#64) + 8#64)) + (rbp + rcx) := by grind
+
+private theorem sub_tp_tail_0_iv (base b c rbp : BitVec 64) :
+    (base + rbp + (-32#64)) - (base - (b + c)) =
+      (b + (c + (-32#64))) + rbp := by grind
+
+private theorem sub_tp_tail_8_iv (base b c rbp : BitVec 64) :
+    (base + rbp + (-32#64) + 8#64) - (base - (b + c)) =
+      (b + (c + (-32#64) + 8#64)) + rbp := by grind
+
+private theorem blocks_inside_a_32 (rsi rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rbp + (-32#64)) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_iv]
+  change (BitVec.ofNat 64 L + 0#64 + rbp).toNat + 8 ≤ L + 32
+  rw [BitVec.add_zero, toNat_ofNat_add_neg L rbp (by omega) h_rbp_ge]
+  have := rbp.isLt; omega
+
+private theorem blocks_inside_a_24 (rsi rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rbp + (-24#64)) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_iv]
+  change (BitVec.ofNat 64 L + 8#64 + rbp).toNat + 8 ≤ L + 32
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 8) rbp (by omega) (by omega)]
+  have := rbp.isLt; omega
+
+private theorem blocks_inside_a_16 (rsi rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rbp + (-16#64)) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_iv]
+  change (BitVec.ofNat 64 L + 16#64 + rbp).toNat + 8 ≤ L + 32
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 16) rbp (by omega) (by omega)]
+  have := rbp.isLt; omega
+
+private theorem blocks_inside_a_8 (rsi rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rbp + (-8#64)) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_iv]
+  change (BitVec.ofNat 64 L + 24#64 + rbp).toNat + 8 ≤ L + 32
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 24) rbp (by omega) (by omega)]
+  have := rbp.isLt; omega
+
+private theorem blocks_inside_a_inner_0 (rsi rcx : BitVec 64) (L : Nat)
+    (h_rcx_ge : 2 ^ 64 - L ≤ rcx.toNat) (h_rcx_mod : rcx.toNat % 16 = 0)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rcx) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_inner_0_iv, ← BitVec.ofNat_add,
+    toNat_ofNat_add_neg (L + 32) rcx (by omega) (by omega)]
+  omega
+
+private theorem blocks_inside_a_inner_8 (rsi rcx : BitVec 64) (L : Nat)
+    (h_rcx_ge : 2 ^ 64 - L ≤ rcx.toNat) (h_rcx_mod : rcx.toNat % 16 = 0)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (rsi + rcx + 8#64) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_a_inner_8_iv]
+  change (BitVec.ofNat 64 L + 40#64 + rcx).toNat + 8 ≤ L + 32
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 40) rcx (by omega) (by omega)]
+  omega
+
+local grind_pattern blocks_inside_a_32 =>
+  Mem.Blocks.Inside (rsi + rbp + (-32#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_24 =>
+  Mem.Blocks.Inside (rsi + rbp + (-24#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_16 =>
+  Mem.Blocks.Inside (rsi + rbp + (-16#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_8 =>
+  Mem.Blocks.Inside (rsi + rbp + (-8#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_inner_0 =>
+  Mem.Blocks.Inside (rsi + rcx) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_inner_8 =>
+  Mem.Blocks.Inside (rsi + rcx + 8#64) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+
+private theorem blocks_inside_tp_preamble_24 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-24#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
+  change (BitVec.ofNat 64 (2 * L) + 8#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rbp (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 8) (rbp + rbp) (by omega) (by omega)]
+  omega
+
+private theorem blocks_inside_tp_preamble_16 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-16#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
+  change (BitVec.ofNat 64 (2 * L) + 16#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rbp (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 16) (rbp + rbp) (by omega) (by omega)]
+  omega
+
+private theorem blocks_inside_tp_preamble_8 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-8#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
+  change (BitVec.ofNat 64 (2 * L) + 24#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rbp (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 24) (rbp + rbp) (by omega) (by omega)]
+  omega
+
+local grind_pattern blocks_inside_tp_preamble_24 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-24#64)) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+local grind_pattern blocks_inside_tp_preamble_16 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-16#64)) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+local grind_pattern blocks_inside_tp_preamble_8 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-8#64)) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+
+private theorem blocks_inside_tp_inner_0 (base rbp rcx : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + rcx) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_inner_0_iv]
+  change (BitVec.ofNat 64 (2 * L) + 32#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rcx (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 32) (rbp + rcx) (by omega) (by omega)]
+  have := rcx.isLt; omega
+
+private theorem blocks_inside_tp_inner_8 (base rbp rcx : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + rcx + 8#64) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_inner_8_iv]
+  change (BitVec.ofNat 64 (2 * L) + 40#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rcx (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 40) (rbp + rcx) (by omega) (by omega)]
+  have := rcx.isLt; omega
+
+private theorem blocks_inside_tp_inner_16_sub_8 (base rbp rcx : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_inner_16_sub_8_iv]
+  change (BitVec.ofNat 64 (2 * L) + 40#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add]
+  have h1 := toNat_add_wrap rbp rcx (by omega)
+  rw [toNat_ofNat_add_neg (2 * L + 40) (rbp + rcx) (by omega) (by omega)]
+  have := rcx.isLt; omega
+
+local grind_pattern blocks_inside_tp_inner_0 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + rcx) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+local grind_pattern blocks_inside_tp_inner_8 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + rcx + 8#64) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+local grind_pattern blocks_inside_tp_inner_16_sub_8 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+
+private theorem blocks_inside_tp_tail_0 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_tail_0_iv]
+  change (BitVec.ofNat 64 (2 * L) + 32#64 + rbp).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (2 * L + 32) rbp (by omega) (by omega)]
+  have := rbp.isLt; omega
+
+private theorem blocks_inside_tp_tail_8 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + 8#64) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
+  refine Or.inl ?_
+  rw [BitVec.ofNat_add, sub_tp_tail_8_iv]
+  change (BitVec.ofNat 64 (2 * L) + 40#64 + rbp).toNat + 8 ≤ 2 * L + 64
+  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (2 * L + 40) rbp (by omega) (by omega)]
+  have := rbp.isLt; omega
+
+local grind_pattern blocks_inside_tp_tail_0 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64)) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+local grind_pattern blocks_inside_tp_tail_8 =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + 8#64) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+
+/-! ### The safety proof -/
+
+/-- The outer-loop safety invariant at `.Lsqr4x_outer`: `%rsi`, `%rsp`, and
+`%r9` keep their initial values, `%rbp` is a negative 16-byte-aligned offset in
+`[2 ^ 64 - L, 2 ^ 64)`, the `(2 * L + 64)`-byte accumulator `tp[]` ending at
+`56(%rsp, %r9, 2)` is preserved, and every initially mapped address remains
+mapped (`Mem.SubDom d.dmem s.dmem`). -/
+private abbrev sqr4x_outer_safety_outer (d : MachineData) (L : Nat) (R : DataMem → Prop)
+    (s : MachineData) : Prop :=
+  let rbp := (s.regs.get64 .rbp).toNat
+  s.regs.get64 .rsi = d.regs.get64 .rsi ∧
+  s.regs.get64 .rsp = d.regs.get64 .rsp ∧
+  s.regs.get64 .r9 = d.regs.get64 .r9 ∧
+  2 ^ 64 - L ≤ rbp ∧ rbp < 2 ^ 64 ∧ rbp % 16 = 0 ∧
+  (s.dmem =⋆ Mem.Blocks
+    [(d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+      BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R) ∧
+  Mem.SubDom d.dmem s.dmem
+
+/-- The inner-loop safety invariant at `.Lsqr4x_inner`: in addition to the
+outer invariant's conditions, `%rdi` sits at the end of the current `tp[]`
+window (`tp_end + %rbp - 32`) and `%rcx` is a negative 16-byte-aligned offset in
+`[%rbp, 2 ^ 64)`. -/
+private abbrev sqr4x_outer_safety_inner (d : MachineData) (L : Nat) (R : DataMem → Prop)
+    (s : MachineData) : Prop :=
+  let rbp := (s.regs.get64 .rbp).toNat
+  let rcx := (s.regs.get64 .rcx).toNat
+  let tp_end := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64
+  s.regs.get64 .rsi = d.regs.get64 .rsi ∧
+  s.regs.get64 .rsp = d.regs.get64 .rsp ∧
+  s.regs.get64 .r9 = d.regs.get64 .r9 ∧
+  s.regs.get64 .rdi = tp_end + s.regs.get64 .rbp + (-32#64) ∧
+  2 ^ 64 - L ≤ rbp ∧ rbp < 2 ^ 64 ∧ rbp % 16 = 0 ∧
+  rbp ≤ rcx ∧ rcx < 2 ^ 64 ∧ rcx % 16 = 0 ∧
+  (s.dmem =⋆ Mem.Blocks [(tp_end - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R) ∧
+  Mem.SubDom d.dmem s.dmem
+
+/-- Both outer-loop proofs use the same entry state and labels, with their
+respective outer and inner loop invariants supplied as `I_outer` and `I_inner`. -/
+private abbrev sqr4x_outer_table (d : MachineData) (I_outer I_inner : MachineData → Prop) :
+    Label → MachineData → Prop
+  | "start", s => s = d
+  | ".Lsqr4x_outer", s => I_outer s
+  | ".Lsqr4x_inner", s => I_inner s
+  | _, _ => False
+
+/-- Lexicographic variant for the nested loop: the outer remaining distance
+`2 ^ 64 - %rbp` dominates, and the inner remaining distance `2 ^ 64 - %rcx`
+decreases along `.Lsqr4x_inner`'s self-edge. -/
+private abbrev sqr4x_outer_var : Label → MachineData → Nat
+  | "start", _ => (2 ^ 64 + 1) ^ 2
+  | ".Lsqr4x_outer", s =>
+      (2 ^ 64 - (s.regs.get64 .rbp).toNat) * (2 ^ 64 + 1) + 2 ^ 64
+  | ".Lsqr4x_inner", s =>
+      (2 ^ 64 - (s.regs.get64 .rbp).toNat) * (2 ^ 64 + 1) +
+        (2 ^ 64 - (s.regs.get64 .rcx).toNat)
+  | _, _ => 0
+
+variable [layout : _root_.Layout] [validLayout : Executable.ValidLayout (layout sqr4x_outer_prog)]
+
+/-- The ambient code of the outer-loop example: `sqr4x_outer_prog`, laid out. -/
+local instance sqr4x_outer.env : CodeEnv := ⟨layout sqr4x_outer_prog⟩
+
+set_option maxRecDepth 16384 in
+set_option maxHeartbeats 800000 in
+theorem sqr4x_outer_safe (d : MachineData) (L : Nat)
+    (h_rbp : d.regs.get64 .rbp = 0#64 - BitVec.ofNat 64 L)
+    (h_L_mod : L % 16 = 0) (h_L_pos : 0 < L) (h_L_bound : 2 * L + 64 < 2 ^ 63)
+    (R R₀ : DataMem → Prop)
+    (h_tp : d.dmem =⋆ Mem.Blocks
+      [(d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+        BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R)
+    (h_a : d.dmem =⋆ Mem.Blocks [(d.regs.get64 .rsi - BitVec.ofNat 64 (L + 32), L + 32)] ⋆ R₀) :
+    ⦃ fun s => s = d ⦄
+      sqr4x_outer_prog
+    ⦃ fun _ s => s.dmem =⋆ Mem.Blocks
+        [(d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+          BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R ⦄ := by
+  apply MachineWP.cfg
+    (sqr4x_outer_table d (sqr4x_outer_safety_outer d L R) (sqr4x_outer_safety_inner d L R))
+    sqr4x_outer_var
+  cfg_cases [sqr4x_outer_prog, sqr4x_outer_preamble, sqr4x_inner_loop, sqr4x_inner_iteration,
+    sqr4x_outer_tail]
+  · vcgen simplifying_assumptions with finish
+  · vcgen simplifying_assumptions with finish
+  · vcgen simplifying_assumptions with finish
+
+theorem sqr4x_outer_terminates_and_safe
+    (s₀ : MachineData) (L : Nat)
+    (h_rbp : s₀.regs.rbp.toBitVec = 0#64 - BitVec.ofNat 64 L)
+    (h_L_mod : L % 16 = 0) (h_L_pos : 0 < L) (h_L_bound : 2 * L + 64 < 2 ^ 63)
+    (R R₀ : DataMem → Prop)
+    (h_tp : s₀.dmem =⋆ Mem.Blocks
+      [(s₀.regs.rsp.toBitVec + s₀.regs.r9.toBitVec * 2#64 + 56#64 -
+        BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R)
+    (h_a : s₀.dmem =⋆ Mem.Blocks [(s₀.regs.rsi.toBitVec - BitVec.ofNat 64 (L + 32), L + 32)] ⋆ R₀) :
+    Eventually (straightlineStep (layout sqr4x_outer_prog))
+      (fun s' => s'.1.dmem =⋆ Mem.Blocks
+        [(s₀.regs.rsp.toBitVec + s₀.regs.r9.toBitVec * 2#64 + 56#64 -
+          BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] ⋆ R)
+      (s₀, Kraken.Layout.start Directive) :=
+  Program.run_of_triple
+    (sqr4x_outer_safe s₀ L h_rbp h_L_mod h_L_pos h_L_bound R R₀ h_tp h_a) rfl
+
+end Sqr4xOuter
