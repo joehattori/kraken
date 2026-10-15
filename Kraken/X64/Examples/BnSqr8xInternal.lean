@@ -33,7 +33,9 @@ Verified so far:
 * The complete inner loop: functional
   correctness against a fold of that arithmetic specification over the original
   input and accumulator limbs, for disjoint input and output windows.
-* `.Lsqr4x_outer`: termination, no faults, memory safety.
+* `.Lsqr4x_outer`: termination, no faults, memory safety, and functional
+  correctness of the complete nested loop against a pure arithmetic fold over
+  the input and accumulator limb arrays.
 -/
 
 open Kraken.X64.Parser
@@ -44,7 +46,9 @@ open Lean.Order
 
 set_option experimental.vcgen true
 
+attribute [local sym_simp] Option.map_none Option.map_some
 attribute [local grind norm]
+  Option.map_none Option.map_some
   MachineData.regs_mk MachineData.zmms_mk MachineData.status_mk MachineData.dmem_mk
   Reg64s.get64_set64 Reg64s.set64_set64
   Width.scaleFactor_W8 BitVec.mul_one BitVec.add_zero
@@ -797,249 +801,82 @@ start:
 
 /-! ### Memory bounds for outer-loop and inner-loop accesses -/
 
-private theorem toNat_ofNat_add_neg (M : Nat) (x : BitVec 64)
-    (hM : M < 2 ^ 64) (hx : 2 ^ 64 - M ≤ x.toNat) :
-    (BitVec.ofNat 64 M + x).toNat = M + x.toNat - 2 ^ 64 := by
-  have := x.isLt
-  rw [BitVec.toNat_add, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hM,
-    Nat.mod_eq_sub_mod (by omega), Nat.mod_eq_of_lt (by omega)]
-
-private theorem toNat_add_wrap (x y : BitVec 64) (h : 2 ^ 64 ≤ x.toNat + y.toNat) :
-    (x + y).toNat = x.toNat + y.toNat - 2 ^ 64 := by
-  have := x.isLt; have := y.isLt
-  rw [BitVec.toNat_add, Nat.mod_eq_sub_mod h, Nat.mod_eq_of_lt (by omega)]
-
-private theorem sub_a_iv (rsi b c rbp d : BitVec 64) :
-    (rsi + rbp + d) - (rsi - (b + c)) = (b + (c + d)) + rbp := by grind
-
-private theorem sub_a_inner_0_iv (rsi b c rcx : BitVec 64) :
-    (rsi + rcx) - (rsi - (b + c)) = (b + c) + rcx := by grind
-
-private theorem sub_a_inner_8_iv (rsi b c rcx : BitVec 64) :
-    (rsi + rcx + 8#64) - (rsi - (b + c)) = (b + (c + 8#64)) + rcx := by grind
-
-private theorem sub_tp_preamble_iv (base b c rbp d : BitVec 64) :
-    (base + rbp + (-32#64) + rbp + d) - (base - (b + c)) =
-      (b + (c + (-32#64) + d)) + (rbp + rbp) := by grind
-
-private theorem sub_tp_inner_0_iv (base b c rbp rcx : BitVec 64) :
-    (base + rbp + (-32#64) + rcx) - (base - (b + c)) =
-      (b + (c + (-32#64))) + (rbp + rcx) := by grind
-
-private theorem sub_tp_inner_8_iv (base b c rbp rcx : BitVec 64) :
-    (base + rbp + (-32#64) + rcx + 8#64) - (base - (b + c)) =
-      (b + (c + (-32#64) + 8#64)) + (rbp + rcx) := by grind
-
-private theorem sub_tp_inner_16_sub_8_iv (base b c rbp rcx : BitVec 64) :
-    (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) - (base - (b + c)) =
-      (b + (c + (-32#64) + 8#64)) + (rbp + rcx) := by grind
-
-private theorem sub_tp_tail_0_iv (base b c rbp : BitVec 64) :
-    (base + rbp + (-32#64)) - (base - (b + c)) =
-      (b + (c + (-32#64))) + rbp := by grind
-
-private theorem sub_tp_tail_8_iv (base b c rbp : BitVec 64) :
-    (base + rbp + (-32#64) + 8#64) - (base - (b + c)) =
-      (b + (c + (-32#64) + 8#64)) + rbp := by grind
-
-private theorem blocks_inside_a_32 (rsi rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (rsi + rbp + (-32#64)) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
+private theorem inside_of_sub_eq {addr base x : BitVec 64} {M len : Nat}
+    (hsub : addr - base = BitVec.ofNat 64 M + x)
+    (h : 2 ^ 64 ≤ M + x.toNat ∧ M + x.toNat - 2 ^ 64 + 8 ≤ len) :
+    Mem.Blocks.Inside addr 8 [(base, len)] := by
   refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_iv]
-  change (BitVec.ofNat 64 L + 0#64 + rbp).toNat + 8 ≤ L + 32
-  rw [BitVec.add_zero, toNat_ofNat_add_neg L rbp (by omega) h_rbp_ge]
-  have := rbp.isLt; omega
+  rw [hsub]
+  grind only [= BitVec.toNat_add, = BitVec.toNat_ofNat]
 
-private theorem blocks_inside_a_24 (rsi rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (rsi + rbp + (-24#64)) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_iv]
-  change (BitVec.ofNat 64 L + 8#64 + rbp).toNat + 8 ≤ L + 32
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 8) rbp (by omega) (by omega)]
-  have := rbp.isLt; omega
-
-private theorem blocks_inside_a_16 (rsi rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (rsi + rbp + (-16#64)) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_iv]
-  change (BitVec.ofNat 64 L + 16#64 + rbp).toNat + 8 ≤ L + 32
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 16) rbp (by omega) (by omega)]
-  have := rbp.isLt; omega
-
-private theorem blocks_inside_a_8 (rsi rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (rsi + rbp + (-8#64)) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_iv]
-  change (BitVec.ofNat 64 L + 24#64 + rbp).toNat + 8 ≤ L + 32
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 24) rbp (by omega) (by omega)]
-  have := rbp.isLt; omega
+private theorem blocks_inside_a_disp (rsi idx d : BitVec 64) (L : Nat)
+    (h_idx_ge : 2 ^ 64 - L ≤ idx.toNat) (h_idx_mod : idx.toNat % 16 = 0)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (hd : (32#64 + d).toNat ≤ 40) :
+    Mem.Blocks.Inside (rsi + idx + d) 8
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] :=
+  inside_of_sub_eq (M := L + (32#64 + d).toNat) (x := idx)
+    (by grind only [= BitVec.ofNat_add, = BitVec.ofNat_toNat, = BitVec.setWidth_eq])
+    (by grind)
 
 private theorem blocks_inside_a_inner_0 (rsi rcx : BitVec 64) (L : Nat)
     (h_rcx_ge : 2 ^ 64 - L ≤ rcx.toNat) (h_rcx_mod : rcx.toNat % 16 = 0)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) :
     Mem.Blocks.Inside (rsi + rcx) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_inner_0_iv, ← BitVec.ofNat_add,
-    toNat_ofNat_add_neg (L + 32) rcx (by omega) (by omega)]
-  omega
+      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] :=
+  inside_of_sub_eq (M := L + 32) (x := rcx) (by grind) (by grind)
 
-private theorem blocks_inside_a_inner_8 (rsi rcx : BitVec 64) (L : Nat)
-    (h_rcx_ge : 2 ^ 64 - L ≤ rcx.toNat) (h_rcx_mod : rcx.toNat % 16 = 0)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (rsi + rcx + 8#64) 8
-      [(rsi - BitVec.ofNat 64 (L + 32), L + 32)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_a_inner_8_iv]
-  change (BitVec.ofNat 64 L + 40#64 + rcx).toNat + 8 ≤ L + 32
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (L + 40) rcx (by omega) (by omega)]
-  omega
-
-local grind_pattern blocks_inside_a_32 =>
-  Mem.Blocks.Inside (rsi + rbp + (-32#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-local grind_pattern blocks_inside_a_24 =>
-  Mem.Blocks.Inside (rsi + rbp + (-24#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-local grind_pattern blocks_inside_a_16 =>
-  Mem.Blocks.Inside (rsi + rbp + (-16#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-local grind_pattern blocks_inside_a_8 =>
-  Mem.Blocks.Inside (rsi + rbp + (-8#64)) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-local grind_pattern blocks_inside_a_inner_0 =>
-  Mem.Blocks.Inside (rsi + rcx) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-local grind_pattern blocks_inside_a_inner_8 =>
-  Mem.Blocks.Inside (rsi + rcx + 8#64) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
-
-private theorem blocks_inside_tp_preamble_24 (base rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-24#64)) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
-  change (BitVec.ofNat 64 (2 * L) + 8#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rbp (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 8) (rbp + rbp) (by omega) (by omega)]
-  omega
-
-private theorem blocks_inside_tp_preamble_16 (base rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-16#64)) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
-  change (BitVec.ofNat 64 (2 * L) + 16#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rbp (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 16) (rbp + rbp) (by omega) (by omega)]
-  omega
-
-private theorem blocks_inside_tp_preamble_8 (base rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-8#64)) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_preamble_iv]
-  change (BitVec.ofNat 64 (2 * L) + 24#64 + (rbp + rbp)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rbp (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 24) (rbp + rbp) (by omega) (by omega)]
-  omega
-
-local grind_pattern blocks_inside_tp_preamble_24 =>
-  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-24#64)) 8
-    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
-local grind_pattern blocks_inside_tp_preamble_16 =>
-  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-16#64)) 8
-    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
-local grind_pattern blocks_inside_tp_preamble_8 =>
-  Mem.Blocks.Inside (base + rbp + (-32#64) + rbp + (-8#64)) 8
-    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
+private theorem blocks_inside_tp_idx_disp (base rbp idx d : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_idx_ge : rbp.toNat ≤ idx.toNat)
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) (hd : (32#64 + d).toNat ≤ 40) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + idx + d) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] :=
+  inside_of_sub_eq (M := 2 * L + (32#64 + d).toNat) (x := rbp + idx)
+    (by grind only [= BitVec.ofNat_add, = BitVec.ofNat_toNat, = BitVec.setWidth_eq])
+    (by grind only [= BitVec.toNat_add])
 
 private theorem blocks_inside_tp_inner_0 (base rbp rcx : BitVec 64) (L : Nat)
     (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) :
     Mem.Blocks.Inside (base + rbp + (-32#64) + rcx) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_inner_0_iv]
-  change (BitVec.ofNat 64 (2 * L) + 32#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rcx (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 32) (rbp + rcx) (by omega) (by omega)]
-  have := rcx.isLt; omega
-
-private theorem blocks_inside_tp_inner_8 (base rbp rcx : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64) + rcx + 8#64) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_inner_8_iv]
-  change (BitVec.ofNat 64 (2 * L) + 40#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rcx (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 40) (rbp + rcx) (by omega) (by omega)]
-  have := rcx.isLt; omega
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] :=
+  inside_of_sub_eq (M := 2 * L + 32) (x := rbp + rcx)
+    (by grind only [= BitVec.ofNat_add]) (by grind only [= BitVec.toNat_add])
 
 private theorem blocks_inside_tp_inner_16_sub_8 (base rbp rcx : BitVec 64) (L : Nat)
     (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_rcx_ge : rbp.toNat ≤ rcx.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
+    (h_L_bound : 2 * L + 64 < 2 ^ 63) :
     Mem.Blocks.Inside (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_inner_16_sub_8_iv]
-  change (BitVec.ofNat 64 (2 * L) + 40#64 + (rbp + rcx)).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add]
-  have h1 := toNat_add_wrap rbp rcx (by omega)
-  rw [toNat_ofNat_add_neg (2 * L + 40) (rbp + rcx) (by omega) (by omega)]
-  have := rcx.isLt; omega
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] :=
+  inside_of_sub_eq (M := 2 * L + 40) (x := rbp + rcx)
+    (by grind only [= BitVec.ofNat_add]) (by grind only [= BitVec.toNat_add])
 
+private theorem blocks_inside_tp_tail_0 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_L_bound : 2 * L + 64 < 2 ^ 63) :
+    Mem.Blocks.Inside (base + rbp + (-32#64)) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] :=
+  inside_of_sub_eq (M := 2 * L + 32) (x := rbp)
+    (by grind only [= BitVec.ofNat_add]) (by grind)
+
+private theorem blocks_inside_tp_tail_8 (base rbp : BitVec 64) (L : Nat)
+    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat) (h_L_bound : 2 * L + 64 < 2 ^ 63) :
+    Mem.Blocks.Inside (base + rbp + (-32#64) + 8#64) 8
+      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] :=
+  inside_of_sub_eq (M := 2 * L + 40) (x := rbp)
+    (by grind only [= BitVec.ofNat_add]) (by grind)
+
+local grind_pattern blocks_inside_a_disp =>
+  Mem.Blocks.Inside (rsi + idx + d) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_a_inner_0 =>
+  Mem.Blocks.Inside (rsi + rcx) 8 [(rsi - BitVec.ofNat 64 (L + 32), L + 32)]
+local grind_pattern blocks_inside_tp_idx_disp =>
+  Mem.Blocks.Inside (base + rbp + (-32#64) + idx + d) 8
+    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
 local grind_pattern blocks_inside_tp_inner_0 =>
   Mem.Blocks.Inside (base + rbp + (-32#64) + rcx) 8
-    [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
-local grind_pattern blocks_inside_tp_inner_8 =>
-  Mem.Blocks.Inside (base + rbp + (-32#64) + rcx + 8#64) 8
     [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
 local grind_pattern blocks_inside_tp_inner_16_sub_8 =>
   Mem.Blocks.Inside (base + rbp + (-32#64) + (rcx + 16#64) + (-8#64)) 8
     [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
-
-private theorem blocks_inside_tp_tail_0 (base rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64)) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_tail_0_iv]
-  change (BitVec.ofNat 64 (2 * L) + 32#64 + rbp).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (2 * L + 32) rbp (by omega) (by omega)]
-  have := rbp.isLt; omega
-
-private theorem blocks_inside_tp_tail_8 (base rbp : BitVec 64) (L : Nat)
-    (h_rbp_ge : 2 ^ 64 - L ≤ rbp.toNat)
-    (h_L_bound : 2 * L + 64 < 2 ^ 63) (_h_pos : 0 < L) :
-    Mem.Blocks.Inside (base + rbp + (-32#64) + 8#64) 8
-      [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)] := by
-  refine Or.inl ?_
-  rw [BitVec.ofNat_add, sub_tp_tail_8_iv]
-  change (BitVec.ofNat 64 (2 * L) + 40#64 + rbp).toNat + 8 ≤ 2 * L + 64
-  rw [← BitVec.ofNat_add, toNat_ofNat_add_neg (2 * L + 40) rbp (by omega) (by omega)]
-  have := rbp.isLt; omega
-
 local grind_pattern blocks_inside_tp_tail_0 =>
   Mem.Blocks.Inside (base + rbp + (-32#64)) 8
     [(base - BitVec.ofNat 64 (2 * L + 64), 2 * L + 64)]
@@ -1150,5 +987,592 @@ theorem sqr4x_outer_terminates_and_safe
       (s₀, Kraken.Layout.start Directive) :=
   Program.run_of_triple
     (sqr4x_outer_safe s₀ L h_rbp h_L_mod h_L_pos h_L_bound R R₀ h_tp h_a) rfl
+
+-- Keep the arithmetic and memory lemmas independent of the enclosing layout.
+omit layout validLayout
+
+/-! ### Functional correctness of the complete outer loop -/
+
+open Std Std.ExtHashMap
+
+/-- The accumulator limbs and memory after `i` completed outer iterations. -/
+structure Sqr4xOuterState where
+  limbs : List (BitVec 64)
+  memory : DataMem
+
+/-- The carry chain, accumulator limbs, and memory at `.Lsqr4x_inner` during
+outer iteration `i`. -/
+structure Sqr4xOuterInnerState where
+  previous : BitVec 64
+  carry0 : BitVec 64
+  carry1 : BitVec 64
+  limbs : List (BitVec 64)
+  memory : DataMem
+
+/-- Reference computation for the `.Lsqr4x_outer` preamble in outer iteration `i`. -/
+def sqr4xOuterPreambleStep (x : List (BitVec 64)) (tp_end : BitVec 64) (n i : Nat)
+    (st : Sqr4xOuterState) : Sqr4xOuterInnerState :=
+  let a0 := x.getD (2 * i) 0
+  let a1 := x.getD (2 * i + 1) 0
+  let a2 := x.getD (2 * i + 2) 0
+  let a3 := x.getD (2 * i + 3) 0
+  let p1 := sqr4xMac a1 a0 (st.limbs.getD (4 * i + 1) 0) 0
+  let p2 := sqr4xMac a2 a0 p1.2 (st.limbs.getD (4 * i + 2) 0)
+  let p3 := sqr4xMac a2 a1 0 (st.limbs.getD (4 * i + 3) 0)
+  let p4 := sqr4xMac a3 a0 p2.2 p3.1
+  let rbp := innerOffset n i
+  let rdi := tp_end + rbp + (-32#64)
+  ⟨a3, p4.2, p3.2,
+    ((st.limbs.set (4 * i + 1) p1.1).set (4 * i + 2) p2.1).set (4 * i + 3) p4.1,
+    ((st.memory.storeInt (rdi + rbp + (-24#64)) 8 p1.1.toIntOpaque).storeInt
+      (rdi + rbp + (-16#64)) 8 p2.1.toIntOpaque).storeInt
+      (rdi + rbp + (-8#64)) 8 p4.1.toIntOpaque⟩
+
+/-- Reference computation for one `.Lsqr4x_inner` body step at `(i, j)`. -/
+def sqr4xOuterInnerStep (x : List (BitVec 64)) (tp_end : BitVec 64) (n i j : Nat)
+    (s : Sqr4xOuterInnerState) : Sqr4xOuterInnerState :=
+  let a0 := x.getD (2 * i) 0
+  let a1 := x.getD (2 * i + 1) 0
+  let x0 := x.getD (2 * j + 4) 0
+  let x1 := x.getD (2 * j + 5) 0
+  let t0 := s.limbs.getD (2 * i + 2 * j + 4) 0
+  let t1 := s.limbs.getD (2 * i + 2 * j + 5) 0
+  let r := sqr4xInnerResult a0 a1 s.previous s.carry0 s.carry1 x0 x1 t0 t1
+  let rdi := tp_end + innerOffset n i + (-32#64)
+  ⟨x1, r.carry0, r.carry1,
+    (s.limbs.set (2 * i + 2 * j + 4) r.out0).set (2 * i + 2 * j + 5) r.out1,
+    (s.memory.storeInt (rdi + innerOffset n j) 8 r.out0.toIntOpaque).storeInt
+      (rdi + innerOffset n j + 8) 8 r.out1.toIntOpaque⟩
+
+/-- Reference fold for `k` iterations of `.Lsqr4x_inner` starting at `j = i`. -/
+def sqr4xOuterInnerFold (x : List (BitVec 64)) (tp_end : BitVec 64) (n i : Nat)
+    (initial : Sqr4xOuterInnerState) : Nat → Sqr4xOuterInnerState
+  | 0 => initial
+  | k + 1 =>
+    sqr4xOuterInnerStep x tp_end n i (i + k)
+      (sqr4xOuterInnerFold x tp_end n i initial k)
+
+/-- Reference computation for `sqr4x_outer_tail` at the end of outer iteration `i`. -/
+def sqr4xOuterTailStep (x : List (BitVec 64)) (tp_end : BitVec 64) (n i : Nat)
+    (s : Sqr4xOuterInnerState) : Sqr4xOuterState :=
+  let a1 := x.getD (2 * i + 1) 0
+  let tail := sqr4xMac s.previous a1 s.carry1 s.carry0
+  let rdi := tp_end + innerOffset n i + (-32#64)
+  ⟨(s.limbs.set (2 * i + 2 * n + 4) tail.1).set (2 * i + 2 * n + 5) tail.2,
+    (s.memory.storeInt rdi 8 tail.1.toIntOpaque).storeInt (rdi + 8) 8 tail.2.toIntOpaque⟩
+
+/-- Reference fold for `i` outer iterations of `.Lsqr4x_outer`. -/
+def sqr4xOuterFold (x : List (BitVec 64)) (tp_end : BitVec 64) (n : Nat)
+    (initial : Sqr4xOuterState) : Nat → Sqr4xOuterState
+  | 0 => initial
+  | i + 1 =>
+    let st := sqr4xOuterFold x tp_end n initial i
+    let inner := sqr4xOuterInnerFold x tp_end n i
+      (sqr4xOuterPreambleStep x tp_end n i st) (n - i)
+    sqr4xOuterTailStep x tp_end n i inner
+
+/-- Expected outer state after `i` of the `n` outer iterations. -/
+def sqr4xOuterPrefix (d : MachineData) (n : Nat) (x t : List (BitVec 64)) (i : Nat) :
+    Sqr4xOuterState :=
+  sqr4xOuterFold x (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) n ⟨t, d.dmem⟩ i
+
+/-- Expected inner state at pair index `j` (`i ≤ j ≤ n`) during outer iteration `i`. -/
+def sqr4xOuterInnerPrefix (d : MachineData) (n : Nat) (x t : List (BitVec 64)) (i j : Nat) :
+    Sqr4xOuterInnerState :=
+  let tp_end := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64
+  sqr4xOuterInnerFold x tp_end n i
+    (sqr4xOuterPreambleStep x tp_end n i (sqr4xOuterPrefix d n x t i)) (j - i)
+
+@[local grind =] private theorem outer_prefix_zero_mem (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) :
+    (sqr4xOuterPrefix d n x t 0).memory = d.dmem := rfl
+
+private theorem outer_inner_prefix_self_fields (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) (i : Nat) :
+    let st := sqr4xOuterPrefix d n x t i
+    let s := sqr4xOuterInnerPrefix d n x t i i
+    let a0 := x.getD (2 * i) 0
+    let a1 := x.getD (2 * i + 1) 0
+    let a2 := x.getD (2 * i + 2) 0
+    let a3 := x.getD (2 * i + 3) 0
+    let p1 := sqr4xMac a1 a0 (st.limbs.getD (4 * i + 1) 0) 0
+    let p2 := sqr4xMac a2 a0 p1.2 (st.limbs.getD (4 * i + 2) 0)
+    let p3 := sqr4xMac a2 a1 0 (st.limbs.getD (4 * i + 3) 0)
+    let p4 := sqr4xMac a3 a0 p2.2 p3.1
+    let rbp := innerOffset n i
+    let rdi := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 + rbp + (-32#64)
+    s.previous = a3 ∧
+    s.carry0 = p4.2 ∧
+    s.carry1 = p3.2 ∧
+    s.memory = ((st.memory.storeInt (rdi + rbp + (-24#64)) 8 p1.1.toIntOpaque).storeInt
+      (rdi + rbp + (-16#64)) 8 p2.1.toIntOpaque).storeInt
+      (rdi + rbp + (-8#64)) 8 p4.1.toIntOpaque := by
+  simp [sqr4xOuterInnerPrefix, sqr4xOuterInnerFold, sqr4xOuterPreambleStep]
+
+private theorem outer_inner_prefix_step (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) (i j : Nat) (hij : i ≤ j) :
+    sqr4xOuterInnerPrefix d n x t i (j + 1) =
+      sqr4xOuterInnerStep x (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) n i j
+        (sqr4xOuterInnerPrefix d n x t i j) := by
+  simp only [sqr4xOuterInnerPrefix]
+  rw [show j + 1 - i = (j - i) + 1 by omega, sqr4xOuterInnerFold,
+    show i + (j - i) = j by omega]
+
+private theorem outer_inner_prefix_step_fields (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) (i j : Nat) (hij : i ≤ j) :
+    let s := sqr4xOuterInnerPrefix d n x t i j
+    let s' := sqr4xOuterInnerPrefix d n x t i (j + 1)
+    let r := sqr4xInnerResult (x.getD (2 * i) 0) (x.getD (2 * i + 1) 0)
+      s.previous s.carry0 s.carry1
+      (x.getD (2 * j + 4) 0) (x.getD (2 * j + 5) 0)
+      (s.limbs.getD (2 * i + 2 * j + 4) 0) (s.limbs.getD (2 * i + 2 * j + 5) 0)
+    let rdi := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 + innerOffset n i + (-32#64)
+    s'.previous = x.getD (2 * j + 5) 0 ∧
+    s'.carry0 = r.carry0 ∧
+    s'.carry1 = r.carry1 ∧
+    s'.memory = (s.memory.storeInt (rdi + innerOffset n j) 8 r.out0.toIntOpaque).storeInt
+      (rdi + innerOffset n j + 8) 8 r.out1.toIntOpaque := by
+  have h := outer_inner_prefix_step d n x t i j hij
+  exact ⟨congrArg Sqr4xOuterInnerState.previous h, congrArg Sqr4xOuterInnerState.carry0 h,
+    congrArg Sqr4xOuterInnerState.carry1 h, congrArg Sqr4xOuterInnerState.memory h⟩
+
+private theorem outer_prefix_step (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) (i : Nat) :
+    sqr4xOuterPrefix d n x t (i + 1) =
+      sqr4xOuterTailStep x (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) n i
+        (sqr4xOuterInnerPrefix d n x t i n) := rfl
+
+private theorem flatMap_set_limb (xs : List (BitVec 64)) (j : Nat) (v : BitVec 64)
+    (hj : j < xs.length) :
+    (xs.flatMap fun w => Int.toBytes 8 w.toInt).take (8 * j) ++
+      Int.toBytes 8 v.toIntOpaque ++
+      (xs.flatMap fun w => Int.toBytes 8 w.toInt).drop (8 * j + 8) =
+    (xs.set j v).flatMap fun w => Int.toBytes 8 w.toInt := by
+  induction xs generalizing j with
+  | nil => simp at hj
+  | cons w xs ih =>
+    cases j with
+    | zero =>
+      simp only [List.flatMap_cons, Nat.mul_zero, List.take_zero, List.nil_append,
+        Nat.zero_add, List.drop_left' (Int.toBytes_length 8 w.toInt), List.set_cons_zero,
+        BitVec.toIntOpaque]
+    | succ j =>
+      simp only [List.flatMap_cons, List.set_cons_succ, List.take_append, Int.toBytes_length]
+      rw [List.take_of_length_le (by rw [Int.toBytes_length]; omega),
+        show 8 * (j + 1) - 8 = 8 * j by omega,
+        show 8 * (j + 1) + 8 = 8 + (8 * j + 8) by omega,
+        ← List.drop_drop, List.drop_left' (Int.toBytes_length 8 w.toInt),
+        List.append_assoc, List.append_assoc, ← List.append_assoc (List.take (8 * j) _),
+        ih j (by simp only [List.length_cons] at hj; omega)]
+
+private theorem load_x_limb {x ts : List (BitVec 64)} {a b addr : BitVec 64} {R : DataMem → Prop}
+    {m : DataMem} (j : Nat)
+    (h : m =⋆ Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At a) ⋆
+      (Eq ((ts.flatMap fun w => Int.toBytes 8 w.toInt).At b) ⋆ R))
+    (hlen : 8 * x.length < 2 ^ 64) (hj : j < x.length)
+    (haddr : addr = a + BitVec.ofNat 64 (8 * j)) :
+    m.loadInt addr 8
+      = some (Int.ofBytes (Int.toBytes 8 (x.getD j 0).toIntOpaque)) :=
+  haddr ▸ load_limb h hlen j hj
+
+private theorem load_tp_limb {x ts : List (BitVec 64)} {a b addr : BitVec 64} {R : DataMem → Prop}
+    {m : DataMem} (j : Nat)
+    (h : m =⋆ Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At a) ⋆
+      (Eq ((ts.flatMap fun w => Int.toBytes 8 w.toInt).At b) ⋆ R))
+    (hlen : 8 * ts.length < 2 ^ 64) (hj : j < ts.length)
+    (haddr : addr = b + BitVec.ofNat 64 (8 * j)) :
+    m.loadInt addr 8
+      = some (Int.ofBytes (Int.toBytes 8 (ts.getD j 0).toIntOpaque)) :=
+  haddr ▸ load_limb (by rwa [sep_comm_l] at h) hlen j hj
+
+private theorem store_tp_limb {x ts : List (BitVec 64)} {a b addr : BitVec 64} {R : DataMem → Prop}
+    {m : DataMem} (j : Nat) (v : BitVec 64)
+    (h : m =⋆ Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At a) ⋆
+      (Eq ((ts.flatMap fun w => Int.toBytes 8 w.toInt).At b) ⋆ R))
+    (hlen : 8 * ts.length < 2 ^ 64) (hj : j < ts.length)
+    (haddr : addr = b + BitVec.ofNat 64 (8 * j)) :
+    m.storeInt addr 8 v.toIntOpaque =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At a) ⋆
+      (Eq (((ts.set j v).flatMap fun w => Int.toBytes 8 w.toInt).At b) ⋆ R) := by
+  subst haddr
+  rw [sep_comm_l] at h ⊢
+  have hoff : (b + BitVec.ofNat 64 (8 * j) - b).toNat = 8 * j := by
+    rw [BitVec.add_comm b, BitVec.add_sub_cancel, BitVec.toNat_ofNat]; omega
+  have hst := Mem.storeInt_slice (addr := b + BitVec.ofNat 64 (8 * j)) (n := 8) h
+    (by rw [hoff, length_flatMap_limbs]; omega)
+    (by rw [length_flatMap_limbs]; omega) v.toIntOpaque
+  rwa [hoff, flatMap_set_limb ts j v hj] at hst
+
+private abbrev outerMemInv (d : MachineData) (n : Nat) (x : List (BitVec 64))
+    (R : DataMem → Prop) (ts : List (BitVec 64)) (m : DataMem) : Prop :=
+  ts.length = 4 * n + 8 ∧
+  m =⋆
+    Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))) ⋆
+    (Eq ((ts.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+        BitVec.ofNat 64 (32 * n + 64))) ⋆ R)
+
+private theorem preamble_mem_inv (d : MachineData) (n : Nat) (x : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 32 * n + 64 < 2 ^ 63) (i : Nat) (hi : i < n)
+    (st : Sqr4xOuterState) (hinv : outerMemInv d n x R st.limbs st.memory) :
+    let s := sqr4xOuterPreambleStep x (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) n i st
+    outerMemInv d n x R s.limbs s.memory := by
+  obtain ⟨hlen, hmem⟩ := hinv
+  dsimp only [sqr4xOuterPreambleStep]
+  refine ⟨by simp only [List.length_set, hlen], ?_⟩
+  refine store_tp_limb (4 * i + 3) _ ?_ (by simp only [List.length_set]; omega) (by simp only [List.length_set]; omega)
+    (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  refine store_tp_limb (4 * i + 2) _ ?_ (by simp only [List.length_set]; omega) (by simp only [List.length_set]; omega)
+    (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  exact store_tp_limb (4 * i + 1) _ hmem (by omega) (by omega)
+    (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+
+private theorem inner_fold_mem_inv (d : MachineData) (n : Nat) (x : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 32 * n + 64 < 2 ^ 63) (i : Nat) (hi : i < n)
+    (initial : Sqr4xOuterInnerState) (hinit : outerMemInv d n x R initial.limbs initial.memory)
+    (k : Nat) (hk : i + k ≤ n) :
+    let s := sqr4xOuterInnerFold x (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) n i initial k
+    outerMemInv d n x R s.limbs s.memory := by
+  induction k with
+  | zero => exact hinit
+  | succ k ih =>
+    obtain ⟨hlen, hmem⟩ := ih (by omega)
+    dsimp only [sqr4xOuterInnerFold, sqr4xOuterInnerStep]
+    refine ⟨by simp only [List.length_set, hlen], ?_⟩
+    refine store_tp_limb (2 * i + 2 * (i + k) + 5) _ ?_ (by simp only [List.length_set]; omega) (by simp only [List.length_set]; omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+    exact store_tp_limb (2 * i + 2 * (i + k) + 4) _ hmem (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+
+private theorem outer_prefix_mem_inv (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 32 * n + 64 < 2 ^ 63) (htl : t.length = 4 * n + 8)
+    (hmem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+          BitVec.ofNat 64 (32 * n + 64))) ⋆ R))
+    (i : Nat) (hi : i ≤ n) :
+    outerMemInv d n x R (sqr4xOuterPrefix d n x t i).limbs (sqr4xOuterPrefix d n x t i).memory := by
+  induction i with
+  | zero => exact ⟨htl, hmem⟩
+  | succ i ih =>
+    have hpre := preamble_mem_inv d n x R hbound i (by omega) _ (ih (by omega))
+    have hinner_inv : outerMemInv d n x R
+        (sqr4xOuterInnerPrefix d n x t i n).limbs (sqr4xOuterInnerPrefix d n x t i n).memory :=
+      inner_fold_mem_inv d n x R hbound i (by omega) _ hpre (n - i) (by omega)
+    obtain ⟨hlen, hinner⟩ := hinner_inv
+    rw [outer_prefix_step]
+    dsimp only [sqr4xOuterTailStep]
+    refine ⟨by simp only [List.length_set, hlen], ?_⟩
+    refine store_tp_limb (2 * i + 2 * n + 5) _ ?_ (by simp only [List.length_set]; omega) (by simp only [List.length_set]; omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+    exact store_tp_limb (2 * i + 2 * n + 4) _ hinner (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+
+private theorem outer_preamble_loads (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 32 * n + 64 < 2 ^ 63)
+    (hxl : x.length = 2 * n + 4) (htl : t.length = 4 * n + 8)
+    (hmem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+          BitVec.ofNat 64 (32 * n + 64))) ⋆ R))
+    (s : MachineData) (hi : innerIndex n (s.regs.get64 .rbp) < n) :
+    let i := innerIndex n (s.regs.get64 .rbp)
+    let st := sqr4xOuterPrefix d n x t i
+    let rbp := innerOffset n i
+    let tp_end := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64
+    let rdi := tp_end + rbp + (-32#64)
+    let a0 := x.getD (2 * i) 0
+    let a1 := x.getD (2 * i + 1) 0
+    let a2 := x.getD (2 * i + 2) 0
+    let p1 := sqr4xMac a1 a0 (st.limbs.getD (4 * i + 1) 0) 0
+    let p2 := sqr4xMac a2 a0 p1.2 (st.limbs.getD (4 * i + 2) 0)
+    st.memory.loadInt (d.regs.get64 .rsi + rbp + (-32#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * i) 0).toIntOpaque)) ∧
+    st.memory.loadInt (d.regs.get64 .rsi + rbp + (-24#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * i + 1) 0).toIntOpaque)) ∧
+    st.memory.loadInt (d.regs.get64 .rsi + rbp + (-16#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * i + 2) 0).toIntOpaque)) ∧
+    ((st.memory.storeInt (rdi + rbp + (-24#64)) 8 p1.1.toIntOpaque).storeInt
+      (rdi + rbp + (-16#64)) 8 p2.1.toIntOpaque).loadInt
+        (d.regs.get64 .rsi + rbp + (-8#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * i + 3) 0).toIntOpaque)) ∧
+    st.memory.loadInt (rdi + rbp + (-24#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (st.limbs.getD (4 * i + 1) 0).toIntOpaque)) ∧
+    st.memory.loadInt (rdi + rbp + (-16#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (st.limbs.getD (4 * i + 2) 0).toIntOpaque)) ∧
+    st.memory.loadInt (rdi + rbp + (-8#64)) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (st.limbs.getD (4 * i + 3) 0).toIntOpaque)) := by
+  dsimp only
+  obtain ⟨hlen, hm⟩ := outer_prefix_mem_inv d n x t R hbound htl hmem
+    (innerIndex n (s.regs.get64 .rbp)) (by omega)
+  have hm1 := store_tp_limb
+    (addr := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 +
+      innerOffset n (innerIndex n (s.regs.get64 .rbp)) + (-32#64) +
+      innerOffset n (innerIndex n (s.regs.get64 .rbp)) + (-24#64))
+    (4 * innerIndex n (s.regs.get64 .rbp) + 1)
+    (sqr4xMac (x.getD (2 * innerIndex n (s.regs.get64 .rbp) + 1) 0)
+      (x.getD (2 * innerIndex n (s.regs.get64 .rbp)) 0)
+      ((sqr4xOuterPrefix d n x t (innerIndex n (s.regs.get64 .rbp))).limbs.getD
+        (4 * innerIndex n (s.regs.get64 .rbp) + 1) 0) 0).1
+    hm (by omega) (by omega)
+    (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  have hm2 := store_tp_limb
+    (addr := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 +
+      innerOffset n (innerIndex n (s.regs.get64 .rbp)) + (-32#64) +
+      innerOffset n (innerIndex n (s.regs.get64 .rbp)) + (-16#64))
+    (4 * innerIndex n (s.regs.get64 .rbp) + 2)
+    (sqr4xMac (x.getD (2 * innerIndex n (s.regs.get64 .rbp) + 2) 0)
+      (x.getD (2 * innerIndex n (s.regs.get64 .rbp)) 0)
+      (sqr4xMac (x.getD (2 * innerIndex n (s.regs.get64 .rbp) + 1) 0)
+        (x.getD (2 * innerIndex n (s.regs.get64 .rbp)) 0)
+        ((sqr4xOuterPrefix d n x t (innerIndex n (s.regs.get64 .rbp))).limbs.getD
+          (4 * innerIndex n (s.regs.get64 .rbp) + 1) 0) 0).2
+      ((sqr4xOuterPrefix d n x t (innerIndex n (s.regs.get64 .rbp))).limbs.getD
+        (4 * innerIndex n (s.regs.get64 .rbp) + 2) 0)).1
+    hm1 (by simp only [List.length_set]; omega) (by simp only [List.length_set]; omega)
+    (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact load_x_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_x_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_x_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_x_limb _ hm2 (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_tp_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_tp_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_tp_limb _ hm (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+
+local grind_pattern outer_preamble_loads =>
+  sqr4xOuterPrefix d n x t (innerIndex n (s.regs.get64 .rbp)),
+  Std.ExtHashMap.sep (Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))))
+    (Std.ExtHashMap.sep (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+        BitVec.ofNat 64 (32 * n + 64)))) R) d.dmem
+
+private theorem outer_inner_loads (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (R : DataMem → Prop) (hbound : 32 * n + 64 < 2 ^ 63)
+    (hxl : x.length = 2 * n + 4) (htl : t.length = 4 * n + 8)
+    (hmem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+          BitVec.ofNat 64 (32 * n + 64))) ⋆ R))
+    (s : MachineData)
+    (hij : innerIndex n (s.regs.get64 .rbp) ≤ innerIndex n (s.regs.get64 .rcx))
+    (hj : innerIndex n (s.regs.get64 .rcx) < n) :
+    let i := innerIndex n (s.regs.get64 .rbp)
+    let j := innerIndex n (s.regs.get64 .rcx)
+    let st := sqr4xOuterInnerPrefix d n x t i j
+    let rdi := (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) + innerOffset n i + (-32#64)
+    st.memory.loadInt (d.regs.get64 .rsi + innerOffset n j) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * j + 4) 0).toIntOpaque)) ∧
+    st.memory.loadInt (d.regs.get64 .rsi + innerOffset n j + 8) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (x.getD (2 * j + 5) 0).toIntOpaque)) ∧
+    st.memory.loadInt (rdi + innerOffset n j) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (st.limbs.getD (2 * i + 2 * j + 4) 0).toIntOpaque)) ∧
+    st.memory.loadInt (rdi + innerOffset n j + 8) 8 =
+      some (Int.ofBytes (Int.toBytes 8 (st.limbs.getD (2 * i + 2 * j + 5) 0).toIntOpaque)) ∧
+    (st.memory.loadInt rdi 8).isSome = true ∧
+    (st.memory.loadInt (rdi + 8) 8).isSome = true := by
+  dsimp only
+  have hpre := preamble_mem_inv d n x R hbound (innerIndex n (s.regs.get64 .rbp)) (by omega) _
+    (outer_prefix_mem_inv d n x t R hbound htl hmem (innerIndex n (s.regs.get64 .rbp)) (by omega))
+  have hinv_j : outerMemInv d n x R
+      (sqr4xOuterInnerPrefix d n x t (innerIndex n (s.regs.get64 .rbp)) (innerIndex n (s.regs.get64 .rcx))).limbs
+      (sqr4xOuterInnerPrefix d n x t (innerIndex n (s.regs.get64 .rbp)) (innerIndex n (s.regs.get64 .rcx))).memory :=
+    inner_fold_mem_inv d n x R hbound (innerIndex n (s.regs.get64 .rbp)) (by omega) _ hpre
+      (innerIndex n (s.regs.get64 .rcx) - innerIndex n (s.regs.get64 .rbp)) (by omega)
+  obtain ⟨hlen_j, hm_j⟩ := hinv_j
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact load_x_limb _ hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_x_limb _ hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_tp_limb _ hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · exact load_tp_limb _ hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)
+  · rw [load_tp_limb (2 * innerIndex n (s.regs.get64 .rbp) + 2 * n + 4) hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)]; rfl
+  · rw [load_tp_limb (2 * innerIndex n (s.regs.get64 .rbp) + 2 * n + 5) hm_j (by omega) (by omega)
+      (by simp only [innerOffset, Nat.mul_add, BitVec.ofNat_add, BitVec.ofNat_mul]; grind)]; rfl
+
+local grind_pattern outer_inner_loads =>
+  sqr4xOuterInnerPrefix d n x t (innerIndex n (s.regs.get64 .rbp)) (innerIndex n (s.regs.get64 .rcx)),
+  Std.ExtHashMap.sep (Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))))
+    (Std.ExtHashMap.sep (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+      (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+        BitVec.ofNat 64 (32 * n + 64)))) R) d.dmem
+
+private theorem storeInt_loadInt_isSome (m : DataMem) (a b : BitVec 64) (v : Int)
+    (h : (m.loadInt b 8).isSome = true) :
+    ((m.storeInt a 8 v).loadInt b 8).isSome = true :=
+  Mem.SubDom.loadInt_isSome (Mem.SubDom.storeInt (Mem.SubDom.refl m) a 8 v) h
+
+local grind_pattern storeInt_loadInt_isSome => (m.storeInt a 8 v).loadInt b 8
+
+private abbrev outerInvariant (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (s : MachineData) : Prop :=
+  let i := innerIndex n (s.regs.get64 .rbp)
+  i < n ∧
+  s.regs.get64 .rsi = d.regs.get64 .rsi ∧
+  s.regs.get64 .rsp = d.regs.get64 .rsp ∧
+  s.regs.get64 .r9 = d.regs.get64 .r9 ∧
+  s.regs.get64 .rbp = innerOffset n i ∧
+  s.dmem = (sqr4xOuterPrefix d n x t i).memory
+
+private abbrev outerInnerInvariant (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (s : MachineData) : Prop :=
+  let i := innerIndex n (s.regs.get64 .rbp)
+  let j := innerIndex n (s.regs.get64 .rcx)
+  let st := sqr4xOuterInnerPrefix d n x t i j
+  i < n ∧ i ≤ j ∧ j < n ∧
+  s.regs.get64 .rsi = d.regs.get64 .rsi ∧
+  s.regs.get64 .rsp = d.regs.get64 .rsp ∧
+  s.regs.get64 .r9 = d.regs.get64 .r9 ∧
+  s.regs.get64 .rbp = innerOffset n i ∧
+  s.regs.get64 .rcx = innerOffset n j ∧
+  s.regs.get64 .rdi =
+    (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64) + innerOffset n i + (-32#64) ∧
+  s.regs.get64 .r14 = x.getD (2 * i) 0 ∧
+  s.regs.get64 .r15 = x.getD (2 * i + 1) 0 ∧
+  s.regs.get64 .rax = st.previous ∧
+  s.regs.get64 .r11 = st.carry0 ∧
+  s.regs.get64 .r13 = st.carry1 ∧
+  s.dmem = st.memory
+
+@[local grind norm] private theorem Sqr4xInnerResult.out0_mk (o0 o1 c0 c1) :
+    (Sqr4xInnerResult.mk o0 o1 c0 c1).out0 = o0 := rfl
+@[local grind norm] private theorem Sqr4xInnerResult.out1_mk (o0 o1 c0 c1) :
+    (Sqr4xInnerResult.mk o0 o1 c0 c1).out1 = o1 := rfl
+@[local grind norm] private theorem Sqr4xInnerResult.carry0_mk (o0 o1 c0 c1) :
+    (Sqr4xInnerResult.mk o0 o1 c0 c1).carry0 = c0 := rfl
+@[local grind norm] private theorem Sqr4xInnerResult.carry1_mk (o0 o1 c0 c1) :
+    (Sqr4xInnerResult.mk o0 o1 c0 c1).carry1 = c1 := rfl
+
+private theorem bound_16_of_32 (n : Nat) (h : 32 * n + 64 < 2 ^ 63) : 16 * n < 2 ^ 63 := by
+  omega
+
+local grind_pattern bound_16_of_32 => 32 * n + 64
+local grind_pattern offset_facts => innerOffset n k
+
+private theorem offset_done (n k : Nat) (hk : k < n) (hn : 16 * n < 2 ^ 63)
+    (hz : innerOffset n k + 16 = 0#64) :
+    k + 1 = n := by
+  have h := (offset_facts n (k + 1) (by omega) hn).1
+  rw [← offset_step] at h
+  exact h.mp hz
+
+private theorem outer_offset_continue (n k : Nat) (hk : k < n) (hn : 16 * n < 2 ^ 63)
+    (hne : innerOffset n k + 16 ≠ 0#64) :
+    k + 1 < n ∧ innerIndex n (innerOffset n k + 16) = k + 1 ∧
+      (2 ^ 64 - (innerOffset n k + 16).toNat) * (2 ^ 64 + 1) + 2 ^ 64 <
+        (2 ^ 64 - (innerOffset n k).toNat) * (2 ^ 64 + 1) := by
+  have hc := offset_continue n k hk hn (by intro h; exact hne (BitVec.eq_of_toNat_eq h))
+  refine ⟨hc.1, hc.2.1, ?_⟩
+  have h1 := (offset_facts n k (by omega) hn).2 hk
+  have h2 := (offset_facts n (k + 1) (by omega) hn).2 hc.1
+  rw [offset_step, h2.1, h1.1]
+  omega
+
+@[local grind =] private theorem ofInt_limb_opaque (v : BitVec 64) :
+    BitVec.ofInt 64 (Int.ofBytes (Int.toBytes 8 v.toIntOpaque)) = v :=
+  ofInt_limb v
+
+@[local grind norm] private theorem bv_zero_add (x : BitVec 64) : 0 + x = x := BitVec.zero_add x
+@[local grind norm] private theorem bv_sub_zero (x : BitVec 64) : x - 0 = x := BitVec.sub_zero x
+
+@[local grind =] private theorem add_16_innerOffset (n k : Nat) :
+    16 + innerOffset n k = innerOffset n k + 16 :=
+  BitVec.add_comm _ _
+
+@[local grind =] private theorem load_after_store_24_16 (m : DataMem) (a : BitVec 64) (v : Int) :
+    (m.storeInt (a + (-24#64)) 8 v).loadInt (a + (-16#64)) 8 = m.loadInt (a + (-16#64)) 8 := by
+  apply load_after_disjoint_store; grind
+
+@[local grind =] private theorem load_after_store_24_8 (m : DataMem) (a : BitVec 64) (v : Int) :
+    (m.storeInt (a + (-24#64)) 8 v).loadInt (a + (-8#64)) 8 = m.loadInt (a + (-8#64)) 8 := by
+  apply load_after_disjoint_store; grind
+
+@[local grind =] private theorem load_after_store_16_8 (m : DataMem) (a : BitVec 64) (v : Int) :
+    (m.storeInt (a + (-16#64)) 8 v).loadInt (a + (-8#64)) 8 = m.loadInt (a + (-8#64)) 8 := by
+  apply load_after_disjoint_store; grind
+
+@[local grind =] private theorem offset_zero (n : Nat) :
+    innerOffset n 0 = 0#64 - BitVec.ofNat 64 (16 * n) := rfl
+
+private theorem outer_prefix_step_mem (d : MachineData) (n : Nat)
+    (x t : List (BitVec 64)) (i j k : Nat) (hik : i + 1 = k) (hj : j + 1 = n) :
+    let s := sqr4xOuterInnerPrefix d n x t i (j + 1)
+    let tail := sqr4xMac s.previous (x.getD (2 * i + 1) 0) s.carry1 s.carry0
+    let rdi := d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 + innerOffset n i + (-32#64)
+    (sqr4xOuterPrefix d n x t k).memory =
+      (s.memory.storeInt rdi 8 tail.1.toIntOpaque).storeInt (rdi + 8) 8 tail.2.toIntOpaque := by
+  subst hik hj; rfl
+
+attribute [local irreducible] sqr4xMac innerIndex innerOffset sqr4xOuterPrefix sqr4xOuterInnerPrefix
+attribute [local sym_simp] Option.map_none BitVec.zero_add BitVec.sub_zero CondCode.interp_nz StatusFlags.zf_from_result
+attribute [local grind unfold] sqr4xInnerResult
+attribute [local grind norm]
+  sqr4xMac_eq Kraken.Fold.fst_mk Kraken.Fold.snd_mk
+  BitVec.unsigned_eq Kraken.Fold.add_assoc_rev BitVec.xor_self BitVec.zero_add BitVec.sub_zero
+  CondCode.interp_nz StatusFlags.zf_from_result
+attribute [local grind =] ofInt_limb offset_initial_index offset_step
+
+local grind_pattern offset_continue => innerOffset n k + 16
+local grind_pattern offset_done => innerOffset n k + 16
+local grind_pattern outer_offset_continue => innerOffset n k + 16
+local grind_pattern outer_inner_prefix_self_fields =>
+  sqr4xOuterInnerPrefix d n x t i i, sqr4xOuterPrefix d n x t i
+local grind_pattern outer_inner_prefix_step_fields =>
+  sqr4xOuterInnerPrefix d n x t i j, innerOffset n j + 16
+local grind_pattern outer_prefix_step_mem =>
+  (sqr4xOuterPrefix d n x t k).memory, sqr4xOuterInnerPrefix d n x t i j
+
+include layout validLayout
+
+set_option maxRecDepth 16384 in
+set_option maxHeartbeats 800000 in
+/-- Functional correctness of the complete `.Lsqr4x_outer` nested loop for `n`
+outer iterations (`2 * n + 4` input limbs in `x` and `4 * n + 8` accumulator
+limbs in `t`). -/
+theorem sqr4x_outer_prog_correct (d : MachineData) (n : Nat) (x t : List (BitVec 64))
+    (h_rbp : d.regs.get64 .rbp = 0#64 - BitVec.ofNat 64 (16 * n))
+    (h_pos : 0 < n) (h_bound : 32 * n + 64 < 2 ^ 63)
+    (h_x_len : x.length = 2 * n + 4) (h_t_len : t.length = 4 * n + 8) (R : DataMem → Prop)
+    (h_mem : d.dmem =⋆
+      Eq ((x.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsi - BitVec.ofNat 64 (16 * n + 32))) ⋆
+      (Eq ((t.flatMap fun w => Int.toBytes 8 w.toInt).At
+        (d.regs.get64 .rsp + d.regs.get64 .r9 * 2#64 + 56#64 -
+          BitVec.ofNat 64 (32 * n + 64))) ⋆ R)) :
+    ⦃ fun s => s = d ⦄ sqr4x_outer_prog ⦃ fun _ s =>
+      s.regs.get64 .rsi = d.regs.get64 .rsi ∧
+      s.regs.get64 .rsp = d.regs.get64 .rsp ∧
+      s.regs.get64 .r9 = d.regs.get64 .r9 ∧
+      s.regs.get64 .rbp = 0#64 ∧
+      s.regs.get64 .rcx = 0#64 ∧
+      s.dmem = (sqr4xOuterPrefix d n x t n).memory ⦄ := by
+  apply MachineWP.cfg
+    (sqr4x_outer_table d (outerInvariant d n x t) (outerInnerInvariant d n x t))
+    sqr4x_outer_var
+  cfg_cases [sqr4x_outer_prog, sqr4x_outer_preamble, sqr4x_inner_loop, sqr4x_inner_iteration,
+    sqr4x_outer_tail]
+  · vcgen simplifying_assumptions with finish
+  · vcgen simplifying_assumptions with finish
+  · vcgen simplifying_assumptions with finish
 
 end Sqr4xOuter
