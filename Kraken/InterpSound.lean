@@ -1,6 +1,6 @@
 /-
 Transport of a directive's transformer into the baseline interpreter.
-`Directive.interp_sound` turns each disjunct of a cell's step, the
+`Directive.interp_sound` turns each disjunct of a directive's step, the
 fall-through tree and the jump tree, into the interpreter with real
 continuations, by a per-primitive dictionary and one case analysis over the
 instruction set. The machine-founded weakest precondition

@@ -2,7 +2,7 @@
 The original `swap` (three `xor`s exchanging `rax` and `rbx`), wrapped as a
 procedure and called twice: the involution restores both registers, and the
 stack pointer comes back to its entry value. `MachineWP.call_spec` links each
-call to its return: the machine pushes the address behind the call cell, and
+call to its return: the machine pushes the address behind the call instruction, and
 the callee's `ret` at that address continues the caller's run.
 -/
 import Kraken.X64.Parser

@@ -10,6 +10,17 @@ open Kraken.X64.Parser
 
 open Instr Operand Reg
 
+-- MOVQ has both integer and SSE2 forms. Selecting the SSE2 form must not
+-- change the existing integer-register, immediate, or memory forms below.
+example : parse("movq %xmm2, %rbp") =
+    [Directive.instr (.avx .W64 .W128 (.movqToReg .rbp (.xmm .mm2)))] := rfl
+
+example : parse("movq %xmm3, %r9") =
+    [Directive.instr (.avx .W64 .W128 (.movqToReg .r9 (.xmm .mm3)))] := rfl
+
+example : parse("movq %rax, %rbx") =
+    [Directive.instr (.regular .W64 .W64 (.mov (.reg .rbx) (.regOrMem (.reg .rax))))] := rfl
+
 -- Test: Simple instruction
 /--
 info: [Directive.instr

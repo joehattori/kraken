@@ -166,6 +166,7 @@ def Operation.toStr {w} (op : Operation w) (addr_w : Width := .W64) : String := 
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
 def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : String := match op with
+  | .movqToReg dst src => s!"movq {Reg.low dst .W64}, {src}"
   | .movups dst src => s!"movups {dst.toStr addr_w}, {src.toStr addr_w}"
   | .vmovups dst src => s!"vmovups {dst.toStr addr_w}, {src.toStr addr_w}"
   | .movaps dst src => s!"movaps {dst.toStr addr_w}, {src.toStr addr_w}"

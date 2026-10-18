@@ -2,8 +2,8 @@
 The text of a program, as the control-flow rule reads it. `Layout.frag` names
 a fragment as it is laid out at a position of its host program.
 `Program.fromLabel` is the scope suffix at a label: the text from the label's
-cell on. `Program.view` parses the text once into the label-free entry segment
-and one `(label, body)` pair per label cell; `Program.blockAt` reads a block
+position on. `Program.view` parses the text once into the label-free entry segment
+and one `(label, body)` pair per label; `Program.blockAt` reads a block
 off that decomposition, and `cfg_cases` splits a control-flow obligation into
 one goal per block.
 -/
@@ -82,12 +82,12 @@ theorem Layout.frag_append [layout : Layout] (n : Nat) (as bs : Program) :
 
 `wp` on `Program` is the run: a fall-through past the end of the text lands in
 `Q`, and a jump exit at label `l` either surfaces in `E l` or, when `l` is a
-label of the program, re-enters at that label's cell. The re-entry closure is
+label of the program, re-enters at that label. The re-entry closure is
 a least fixpoint, taken by `Eventually` inside the definition; no statement
 mentions it. -/
 
-/-- The suffix of a program at the last cell carrying `label l`; `[]` when the
-program has no such cell. Re-entry at the last occurrence keeps a suffix's
+/-- The suffix of a program at the last occurrence of `label l`; `[]` when the
+program has no such label. Re-entry at the last occurrence keeps a suffix's
 scope a restriction of its host's scope. -/
 def Program.fromLabel : Program → Label → Program
   | [], _ => []
@@ -102,7 +102,7 @@ def Program.fromLabel : Program → Label → Program
       if Program.fromLabel p l = [] ∧ d = Directive.label l then d :: p
       else Program.fromLabel p l := rfl
 
-/-- An instruction cell is invisible to the scope lookup. -/
+/-- An instruction is invisible to the scope lookup. -/
 @[simp] theorem Program.fromLabel_cons_instr (i : Instr) (p : Program) (l : Label) :
     Program.fromLabel (Directive.instr i :: p) l = Program.fromLabel p l := by
   rw [Program.fromLabel_cons, if_neg (by rintro ⟨-, h⟩; cases h)]
@@ -117,7 +117,7 @@ theorem Program.fromLabel_suffix (p : Program) (l : Label) :
     · exact List.suffix_rfl
     · exact ih.trans (List.suffix_cons d p)
 
-/-- A label with a scope suffix is a cell of the program. -/
+/-- A label with a scope suffix is a directive of the program. -/
 theorem Program.fromLabel_mem {p : Program} {l : Label}
     (h : Program.fromLabel p l ≠ []) : Directive.label l ∈ p := by
   induction p with
@@ -136,7 +136,7 @@ def Directive.isLabel : Directive → Bool
 
 /-! ### Basic blocks and the control-flow rule
 
-`Program.view` cuts the text at its label cells; `Program.blockAt` is the
+`Program.view` cuts the text at its labels; `Program.blockAt` is the
 partial map from a label to its block: the label-free body there, and the
 label of the block that follows. `Program.cfg` verifies the whole program
 from one spec table `T` and one variant `var`: one triple per block, where an
@@ -159,7 +159,7 @@ theorem Program.labels_append (a b : Program) :
     | instr i => exact ih
     | byteArray a' => exact ih
 
-theorem Program.mem_labels_of_cell {t : Program} {l : Label}
+theorem Program.mem_labels_of_mem {t : Program} {l : Label}
     (h : Directive.label l ∈ t) : l ∈ Program.labels t := by
   induction t with
   | nil => cases h
@@ -172,7 +172,7 @@ theorem Program.mem_labels_of_cell {t : Program} {l : Label}
       | instr i => exact ih hmem
       | byteArray a => exact ih hmem
 
-/-- A nonempty scope suffix starts with its own label cell. -/
+/-- A nonempty scope suffix starts with its own label. -/
 theorem Program.fromLabel_head :
     ∀ (p : Program) {l : Label}, Program.fromLabel p l ≠ [] →
       ∃ rest, Program.fromLabel p l = Directive.label l :: rest := by
@@ -236,7 +236,7 @@ private theorem idxOf_eq_of_getElem? {α} [BEq α] [LawfulBEq α] {xs : List α}
 /-! ### The block view
 
 `Program.view` parses the text once: the label-free entry segment, then one
-`(label, body)` pair per label cell, with label-free bodies. The block map and
+`(label, body)` pair per label, with label-free bodies. The block map and
 the control-flow rule read this decomposition; `Program.fromLabel_view`
 connects it to the scope suffixes the run semantics traverses. -/
 
@@ -246,20 +246,20 @@ def Program.view : Program → Program × List (Label × Program)
   | .label l :: p => ([], (l, (Program.view p).1) :: (Program.view p).2)
   | d :: p => (d :: (Program.view p).1, (Program.view p).2)
 
-/-- The glue of one block: its label cell, then its body. -/
-abbrev Program.blockCells (lb : Label × Program) : Program :=
+/-- The glue of one block: its label, then its body. -/
+abbrev Program.blockDirectives (lb : Label × Program) : Program :=
   Directive.label lb.1 :: lb.2
 
 /-- The text is its entry segment followed by its labeled blocks. -/
 theorem Program.view_eq (p : Program) :
-    p = (Program.view p).1 ++ ((Program.view p).2.flatMap Program.blockCells) := by
+    p = (Program.view p).1 ++ ((Program.view p).2.flatMap Program.blockDirectives) := by
   induction p with
   | nil => rfl
   | cons d p ih =>
     cases d with
     | label l =>
       simp only [Program.view, List.flatMap_cons, List.nil_append, List.cons_append,
-        Program.blockCells]
+        Program.blockDirectives]
       exact congrArg (Directive.label l :: ·) ih
     | instr i =>
       simp only [Program.view, List.cons_append]
@@ -309,7 +309,7 @@ label's position. -/
 theorem Program.fromLabel_view {p : Program} (hnd : (Program.labels p).Nodup) :
     ∀ {i : Nat} {l : Label} {b : Program}, (Program.view p).2[i]? = some (l, b) →
       Program.fromLabel p l
-        = ((Program.view p).2.drop i).flatMap Program.blockCells := by
+        = ((Program.view p).2.drop i).flatMap Program.blockDirectives := by
   induction p with
   | nil => intro i l b hi; simp [Program.view] at hi
   | cons d p ih =>
@@ -326,10 +326,10 @@ theorem Program.fromLabel_view {p : Program} (hnd : (Program.labels p).Nodup) :
         have hnil : Program.fromLabel p l' = [] := by
           by_cases hne : Program.fromLabel p l' = []
           · exact hne
-          · exact absurd (Program.mem_labels_of_cell (Program.fromLabel_mem hne))
+          · exact absurd (Program.mem_labels_of_mem (Program.fromLabel_mem hne))
               (List.nodup_cons.mp hnd).1
         rw [Program.fromLabel_cons, if_pos ⟨hnil, rfl⟩]
-        simp only [Program.view, List.drop_zero, List.flatMap_cons, Program.blockCells,
+        simp only [Program.view, List.drop_zero, List.flatMap_cons, Program.blockDirectives,
           List.cons_append]
         exact congrArg (Directive.label l' :: ·) (Program.view_eq p)
       | succ j =>
@@ -445,8 +445,8 @@ theorem Program.blockIdx_eq {p : Program} (hnd : (Program.labels p).Nodup)
 /-- The blocks behind position `i`, glued back into text. -/
 theorem Program.drop_flatMap_cons {bs : List (Label × Program)} {i : Nat}
     {l : Label} {b : Program} (hi : bs[i]? = some (l, b)) :
-    (bs.drop i).flatMap Program.blockCells
-      = Directive.label l :: (b ++ (bs.drop (i + 1)).flatMap Program.blockCells) := by
+    (bs.drop i).flatMap Program.blockDirectives
+      = Directive.label l :: (b ++ (bs.drop (i + 1)).flatMap Program.blockDirectives) := by
   have hlt : i < bs.length := by
     by_cases h : i < bs.length
     · exact h
@@ -456,7 +456,7 @@ theorem Program.drop_flatMap_cons {bs : List (Label × Program)} {i : Nat}
     rw [hi] at h1
     exact (Option.some.inj h1.symm)
   rw [List.drop_eq_getElem_cons hlt, hget, List.flatMap_cons]
-  simp only [Program.blockCells, List.cons_append]
+  simp only [Program.blockDirectives, List.cons_append]
 
 /-- Wellformed text: the labels are unique. The condition is decidable, so
 `by decide` closes `WF` for a concrete program. -/
@@ -467,7 +467,7 @@ instance (p : Program) : Decidable (Program.WF p) :=
   decidable_of_iff ((Program.labels p).Nodup) ⟨fun h => ⟨h⟩, fun h => h.nodup⟩
 
 /-- The split of the text at a present label: the fresh prefix, the label
-cell, and the rest. -/
+directive, and the rest. -/
 theorem Program.fromLabel_split {p : Program} {l : Label}
     (hnd : (Program.labels p).Nodup) (hne : Program.fromLabel p l ≠ []) :
     ∃ t rest, p = t ++ (Directive.label l :: rest)

@@ -69,7 +69,7 @@ ff_sbr_neg_odd_64_sse:
 /-- The spec table: the machine at each label, for a run that started on `d`
 with the mask at `mask`. At `.loop` it is the loop invariant: `rsi` is the end
 of the array, `rdi` is a multiple of 64 bytes into it, and the array and the
-mask are in place. Control never reaches the mask's cell. -/
+mask are in place. Control never reaches the mask's data directive. -/
 private abbrev sbr_table (d : MachineData) (mask : BitVec 64) (R : DataMem → Prop) :
     Label → MachineData → Prop
   | "start", s => s = d

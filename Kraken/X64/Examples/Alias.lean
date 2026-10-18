@@ -1,5 +1,5 @@
 /-
-Alias labels: `alias` and `fin` name the same address, because the label cell
+Alias labels: `alias` and `fin` name the same address, because the label
 `alias` occupies no bytes. `palias_correct` runs the control-flow rule over
 the three blocks, and `palias_correct_run` reads the triple back at the
 machine through `Program.run_of_triple`, whose placement handles the shared

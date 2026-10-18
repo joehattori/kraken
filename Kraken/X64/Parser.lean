@@ -768,7 +768,14 @@ def parseInstr : Parser Instr := do
   | "mov" | "movabs" =>
     commaSeparated .none parseOperand parseRegOrMem .mov
 
-  | "movq" | "movl" | "movw" | "movb"
+  | "movq" =>
+    (attempt do
+      let src ← parseAvxRegO .W128; parseComma
+      let .low dst .W64 ← parseRegO .W64
+      pure (toAvxInstr .none (w := .W128) (.movqToReg dst src))) <|>
+      commaSeparated (some .W64) parseOperand parseRegOrMem .mov
+
+  | "movl" | "movw" | "movb"
   | "movabsq" | "movabsl" | "movabsw" | "movabsb" =>
     let w ← instrWidth mn
     commaSeparated w parseOperand parseRegOrMem .mov
@@ -1098,7 +1105,7 @@ def parseAlign : Parser Instr := do
   pure (toInstr .none (w := .W64) (.nopalign alignment.toNat pad))
 
 /-- Parse a `.byte` data directive: comma-separated byte values, decimal or
-hex. The bytes become one data cell. -/
+hex. The bytes become one data directive. -/
 def parseByteData : Parser Directive := do
   let _ ← pstring ".byte"
   skipHWs

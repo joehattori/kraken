@@ -28,7 +28,7 @@ private theorem int64_ofNat_add (a b : Nat) :
   apply Int64.toBitVec_inj.mp
   simp
 
-/-- The cell of `withAddresses` at an index: the directive there, at the sum
+/-- The entry of `withAddresses` at an index: the directive there, at the sum
 of the sizes before it. -/
 private theorem getElem?_withAddresses_pair :
     ∀ (ds : List (Directive × Nat)) (a : Int64) (k : Nat),
@@ -73,8 +73,8 @@ private theorem idxOf_eq_of {α} [BEq α] [LawfulBEq α] {l : List α} {a : α} 
       simp
 
 /-- `dropWhile` drops a prefix: some position `j` has the tail from `j` on,
-every element before `j` satisfying the predicate and, when a cell sits at
-`j`, that cell failing it. -/
+every element before `j` satisfying the predicate and, when an element sits at
+`j`, that element failing it. -/
 private theorem dropWhile_stops {α} {p : α → Bool} {l : List α} :
     ∃ j, l.dropWhile p = l.drop j
       ∧ (∀ k, k < j → ∀ c, l[k]? = some c → p c = true)
@@ -288,12 +288,12 @@ theorem addrOf_succ (e : Kraken.Executable Directive) {n : Nat} {d : Directive} 
   unfold addrOf
   rw [sizeBefore_succ e hd, int64_ofNat_add, Int64.add_assoc]
 
-/-- A nonempty segment starts at a cell, and the segment is the text from
-that cell on. -/
+/-- A nonempty segment starts at a position, and the segment is the text from
+that position on. -/
 theorem exists_pos_of_directivesFromAddress (e : Kraken.Executable Directive) {a : Int64}
     (h : e.directivesFromAddress a ≠ []) :
     ∃ k, k < e.2.length ∧ e.addrOf k = a ∧ e.directivesFromAddress a = e.2.drop k := by
-  -- the dropWhile stops somewhere inside the list; that position is the cell
+  -- the dropWhile stops somewhere inside the list; that position is the start
   obtain ⟨j, hjdrop, hjprior⟩ := dropWhile_stops
       (p := fun c : Int64 × Directive × Nat => c.1 ≠ a)
       (l := Kraken.Executable.withAddresses (e.1, e.2))
@@ -311,7 +311,7 @@ theorem exists_pos_of_directivesFromAddress (e : Kraken.Executable Directive) {a
     · rw [hseg, List.drop_eq_nil_of_le (by omega)] at h
       exact absurd rfl h
   refine ⟨j, hjlt, ?_, hseg⟩
-  -- the cell at the stop satisfies the stop condition: its address is `a`
+  -- the entry at the stop satisfies the stop condition: its address is `a`
   obtain ⟨c, hc⟩ : ∃ c, (Kraken.Executable.withAddresses (e.1, e.2))[j]? = some c :=
     ⟨_, List.getElem?_eq_getElem (by omega)⟩
   have hstop := hjprior.2 c hc
@@ -364,8 +364,8 @@ theorem _root_.Nat.exists_least_le {P : Nat → Prop} {n : Nat} (h : P n) :
       exact ⟨j, by omega, hPj, hmin⟩
     · exact ⟨n, Nat.le_refl n, h, fun k hk hPk => hb ⟨k, hk, hPk⟩⟩
 
-/-- Between two cut points with one address every cell is a label: a
-non-label cell occupies at least one byte and separates the addresses. -/
+/-- Between two cut points with one address every directive is a label: a
+non-label directive occupies at least one byte and separates the addresses. -/
 theorem label_between_of_addrOf_eq (e : Kraken.Executable Directive) [hv : ValidLayout e] {j k n : Nat}
     (hjk : j ≤ k) (hkn : k < n) (hn : n ≤ e.2.length)
     (heq : e.addrOf j = e.addrOf n) :
@@ -384,7 +384,7 @@ theorem label_between_of_addrOf_eq (e : Kraken.Executable Directive) [hv : Valid
     omega
 
 /-- The cut point of the address of index `n`: the segment there starts at
-the least index `j` with that address, and every cell from `j` up to `n` is a
+the least index `j` with that address, and every directive from `j` up to `n` is a
 label. -/
 theorem exists_cut (e : Kraken.Executable Directive) [ValidLayout e] {n : Nat} (hn : n ≤ e.2.length) :
     ∃ j, j ≤ n ∧ e.directivesFromAddress (e.addrOf n) = e.2.drop j

@@ -239,6 +239,8 @@ inductive Operation (w : Width)
 -- The non-v* variants take SSE registers only.
 -- TODO: AVX512 extensions (write-masking, ...)
 inductive AvxOperation (w : AvxWidth)
+  -- Legacy SSE2 MOVQ, with an integer register destination.
+  | movqToReg (dst : Reg64) (src : AvxReg .W128)
   | movups (_ : AvxDst w) (src : AvxRegOrMem w)
   | vmovups (_ : AvxDst w) (src : AvxRegOrMem w)
   | movaps (_ : AvxDst w) (src : AvxRegOrMem w)

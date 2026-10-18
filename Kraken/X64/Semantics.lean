@@ -782,6 +782,10 @@ def AvxOperation.interp [Labels] [address_size : AddressSize]
   {w} (i : AvxOperation w) (p : Std.Rco Int64) (s : MachineData)
   (next : MachineData → Effects) : Effects :=
 match i with
+  -- Intel SDM Vol. 2B, MOVD/MOVQ, "When Destination Operand is r/m64":
+  -- copy SRC[63:0]; no flags or vector registers are modified.
+  | .movqToReg dst src =>
+    next { s with regs := s.regs.set64 dst ((s.zmms.get src).extractLsb' 0 64) }
   | .movups dst src => src.interp s p (fun val s => s.setAvxLegacy dst val p next)
   | .vmovups dst src => src.interp s p (fun val s => s.setAvx dst val p next)
   | .movaps dst src =>
