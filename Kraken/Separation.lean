@@ -20,12 +20,7 @@ def emp : ExtHashMap key value → Prop := fun m => m = ∅
 omit [LawfulBEq key] in
 theorem disjoint_symm {m1 m2 : ExtHashMap key value} (h : m1.inter m2 = ∅) :
     m2.inter m1 = ∅ := by
-  simpa only [eq_empty_iff_forall_not_mem, inter_eq, mem_inter_iff, and_comm] using h
-
-omit [LawfulBEq key] in
-private theorem disjoint_symm_iff {m1 m2 : ExtHashMap key value} :
-    (m1.inter m2 = ∅) = (m2.inter m1 = ∅) :=
-  propext ⟨disjoint_symm, disjoint_symm⟩
+  exact inter_eq_empty_comm.mp h
 
 theorem union_comm_of_disjoint (m1 m2 : ExtHashMap key value) (h_disj : m1.inter m2 = ∅) :
     m1.union m2 = m2.union m1 := by
@@ -46,17 +41,13 @@ private theorem union_assoc (m1 m2 m3 : ExtHashMap key value) :
 
 omit [LawfulBEq key] in
 private theorem disjoint_union_l (a b c : ExtHashMap key value) :
-    ((a.union b).inter c = ∅) = (a.inter c = ∅ ∧ b.inter c = ∅) := by
-  apply propext
-  simp only [eq_empty_iff_forall_not_mem, inter_eq, mem_inter_iff, union_eq, mem_union_iff]
-  grind
+    ((a.union b).inter c = ∅) = (a.inter c = ∅ ∧ b.inter c = ∅) :=
+  propext union_inter_eq_empty_iff
 
 omit [LawfulBEq key] in
 private theorem disjoint_union_r (a b c : ExtHashMap key value) :
-    (a.inter (b.union c) = ∅) = (a.inter b = ∅ ∧ a.inter c = ∅) := by
-  rw [disjoint_symm_iff]
-  rw [disjoint_union_l]
-  rw [disjoint_symm_iff (m1:=b), disjoint_symm_iff (m1:=c)]
+    (a.inter (b.union c) = ∅) = (a.inter b = ∅ ∧ a.inter c = ∅) :=
+  propext inter_union_eq_empty_iff
 
 theorem sep_comm (p q : ExtHashMap key value → Prop) : p ⋆ q = q ⋆ p := by
   have h (p q : ExtHashMap key value → Prop) (m) (h : (p ⋆ q) m) : (q ⋆ p) m := by
