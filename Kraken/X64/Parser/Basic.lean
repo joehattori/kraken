@@ -621,6 +621,25 @@ def parseWidthSuffix : Char → Option Width
   | 'b' => pure .W8 | 'w' => pure .W16 | 'l' => pure .W32 | 'q' => pure .W64
   | _ =>  none
 
+/-- Operands of a BMI2 shift (`shlx`, `shrx`, `sarx`): `cnt, src, dst`, where `cnt` and `dst` are
+    registers and `src` is a register or memory operand, all of the same width. -/
+def parseBmi2Shift (op_w : Option Width)
+    (mk : {w : Width} → Reg w → RegOrMem w → Reg w → Operation w) : Parser Instr := do
+  match op_w with
+  | .none =>
+    let ⟨ w, cnt ⟩ ← parseRegW; parseComma
+    let ( addr_w, src ) ← parseRegOrMemAO w; parseComma
+    let ⟨ w', dst ⟩ ← parseRegW
+    if h : w' = w then
+      pure (toInstr addr_w (mk (h ▸ dst) src cnt))
+    else
+      fail "BMI2 shift not homogenous"
+  | .some w =>
+    let cnt ← parseRegO w; parseComma
+    let ( addr_w, src ) ← parseRegOrMemAO w; parseComma
+    let dst ← parseRegO w
+    pure (toInstr addr_w (mk dst src cnt))
+
 /-- Parse an instruction mnemonic and its operands.
     AT&T syntax: src, dst (reversed from Intel). -/
 def parseInstr : Parser Instr := do
@@ -949,6 +968,14 @@ def parseInstr : Parser Instr := do
     let cnt ← parseOptionalShiftAndComma
     let ( addr_w, dst ) ← parseRegOrMemAO w
     pure (toInstr addr_w (.sar dst cnt))
+
+  -- BMI2 shifts (`shlx cnt, src, dst`)
+  | "shlx" => parseBmi2Shift .none .shlx
+  | "shlxq" | "shlxl" => do parseBmi2Shift (some (← instrWidth mn)) .shlx
+  | "shrx" => parseBmi2Shift .none .shrx
+  | "shrxq" | "shrxl" => do parseBmi2Shift (some (← instrWidth mn)) .shrx
+  | "sarx" => parseBmi2Shift .none .sarx
+  | "sarxq" | "sarxl" => do parseBmi2Shift (some (← instrWidth mn)) .sarx
 
   | "shld" =>
     let cnt ← parseShiftExpr; parseComma

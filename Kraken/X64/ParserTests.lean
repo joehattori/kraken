@@ -369,6 +369,34 @@ info: [Directive.instr
 #guard_msgs (whitespace := lax) in
 #check parse("mulxq %r8, %r9, %r10")
 
+-- Test: BMI2 shifts (count, source, destination)
+/--
+info: [Directive.instr
+    (regular Width.W64 Width.W32
+      (Operation.shlx (low Reg64.rax Width.W32) (↑(low Reg64.rbx Width.W32))
+        (low Reg64.rcx Width.W32)))] : List _root_.Directive
+-/
+#guard_msgs (whitespace := lax) in
+#check parse("shlxl %ecx, %ebx, %eax")
+
+/--
+info: [Directive.instr
+    (regular Width.W64 Width.W64
+      (Operation.sarx (low Reg64.rdx Width.W64) (↑{ base := some (RegOrRip.reg Reg64.rsp), idx := none, disp := ↑8 })
+        (low Reg64.rcx Width.W64)))] : List _root_.Directive
+-/
+#guard_msgs (whitespace := lax) in
+#check parse("sarx %rcx, 8(%rsp), %rdx")
+
+/--
+info: [Directive.instr
+    (regular Width.W64 Width.W64
+      (Operation.shrx (low Reg64.r10 Width.W64) (↑(low Reg64.r9 Width.W64))
+        (low Reg64.r8 Width.W64)))] : List _root_.Directive
+-/
+#guard_msgs (whitespace := lax) in
+#check parse("shrxq %r8, %r9, %r10")
+
 -- Test: xor for zeroing
 /--
 info: [Directive.instr
@@ -459,6 +487,10 @@ section error_reporting
 /-- error: <input>:1:9: unexpected element; expected ';' -/
 #guard_msgs in
 #check parse("shlq %rcx, %rax")
+
+/-- error: type error: w32 != w64 -/
+#guard_msgs in
+#check parse("shlx %ecx, %ebx, %rax")
 
 /-- error: <input>:1:0: expected end of input -/
 #guard_msgs in

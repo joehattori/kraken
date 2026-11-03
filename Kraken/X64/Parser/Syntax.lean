@@ -274,6 +274,15 @@ declare_syntax_cat x64_mulx_op (behavior := both)
 /-- Unsigned multiply without affecting flags (`hi:lo ← %rdx * src`). -/
 syntax_affixed (suffixes := lq) "mulx" : x64_mulx_op
 
+/-- BMI2 shift (`shlx*`, `shrx*`, `sarx*`) mnemonics (3-operand form). -/
+declare_syntax_cat x64_shiftx_op (behavior := both)
+/-- Shift logical left without affecting flags (`dst ← src << cnt`). -/
+syntax_affixed (suffixes := lq) "shlx" : x64_shiftx_op
+/-- Shift logical right without affecting flags (`dst ← src >> cnt`). -/
+syntax_affixed (suffixes := lq) "shrx" : x64_shiftx_op
+/-- Shift arithmetic right without affecting flags (`dst ← src >>> cnt`). -/
+syntax_affixed (suffixes := lq) "sarx" : x64_shiftx_op
+
 /-- Sign- and zero-extending move mnemonics with explicit source and destination widths. -/
 declare_syntax_cat x64_ext_mov_op (behavior := both)
 /-- Move with sign extension. -/
@@ -369,6 +378,7 @@ syntax withPosition(x64_avx_op lineEq x64_avx_operand "," lineEq x64_avx_operand
 syntax withPosition(x64_shift_op lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shift_op lineEq x64_shift_count "," lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shd_op lineEq x64_shift_count "," lineEq x64_reg "," lineEq x64_operand) : x64_instr
+syntax withPosition(x64_shiftx_op lineEq x64_reg "," lineEq x64_operand "," lineEq x64_reg) : x64_instr
 syntax withPosition(x64_bswap_op lineEq x64_reg) : x64_instr
 syntax withPosition(x64_push_op lineEq x64_operand) : x64_instr
 syntax withPosition(x64_pop_op lineEq x64_operand) : x64_instr

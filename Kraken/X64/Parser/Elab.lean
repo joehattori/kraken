@@ -533,6 +533,14 @@ def elabShdOp (stx : TSyntax `x64_shd_op) : TermElabM Expr := withRef stx do
   | "shrd" => pure (mkConst ``Operation.shrd)
   | stem   => throwError "invalid double-precision shift mnemonic '{stem}'"
 
+/-- The `Operation` constructor of an `x64_shiftx_op`. -/
+def elabShiftxOp (stx : TSyntax `x64_shiftx_op) : TermElabM Expr := withRef stx do
+  match ← getAffixedStem stx with
+  | "shlx" => pure (mkConst ``Operation.shlx)
+  | "shrx" => pure (mkConst ``Operation.shrx)
+  | "sarx" => pure (mkConst ``Operation.sarx)
+  | stem   => throwError "invalid BMI2 shift mnemonic '{stem}'"
+
 -- ============================================================================
 -- Instruction Elaboration
 -- ============================================================================
@@ -646,6 +654,13 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
     let src ← elabReg src
     let dst ← elabRegOrMemOperand dst
     mkRegularInstr (← mkAppWidth mk #[dst, src, toExpr cnt])
+  | `(x64_instr| $op:x64_shiftx_op $cnt:x64_reg, $src:x64_operand, $dst:x64_reg) =>
+    let mk ← elabShiftxOp op
+    setSuffixWidth op
+    let cnt ← elabReg cnt
+    let src ← elabRegOrMemOperand src
+    let dst ← elabReg dst
+    mkRegularInstr (← mkAppWidth mk #[dst, src, cnt])
   | `(x64_instr| $op:x64_bswap_op $dst:x64_reg) =>
     let mk := mkConst ``Operation.bswap
     setSuffixWidth op

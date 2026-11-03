@@ -664,6 +664,19 @@ set_option maxHeartbeats 1000000
     undefined (λ af =>
     (λ setof => if count == 1 then setof false else undefined setof) (λ of =>
     { s with status := .from_result v { s.status with cf, af, of } }.set dst v p next)))
+  -- BMI2 shifts leave the flags unchanged. The count is masked like `ShiftCountExpr.interpMasked`.
+  | .shlx dst src cnt =>
+    src.interp s p (fun a s =>
+    let count := (s.regs.get cnt).toNat &&& match w with | .W64 => 0x3f | _ => 0x1f
+    s.set (.reg dst) (a <<< count) p next)
+  | .shrx dst src cnt =>
+    src.interp s p (fun a s =>
+    let count := (s.regs.get cnt).toNat &&& match w with | .W64 => 0x3f | _ => 0x1f
+    s.set (.reg dst) (a.ushiftRight count) p next)
+  | .sarx dst src cnt =>
+    src.interp s p (fun a s =>
+    let count := (s.regs.get cnt).toNat &&& match w with | .W64 => 0x3f | _ => 0x1f
+    s.set (.reg dst) (a.sshiftRight count) p next)
   | .shrd dst src count =>
     dst.interp s p (fun a s =>
     src.interp s p (fun b s =>

@@ -222,6 +222,10 @@ inductive Operation (w : Width)
   | shl  (_ : Dst w) (_ : ShiftCountExpr)
   | shr  (_ : Dst w) (_ : ShiftCountExpr)
   | sar  (_ : Dst w) (_ : ShiftCountExpr)
+  -- BMI2 shifts: `dst := src` shifted by `cnt`, flags unaffected
+  | shlx (dst : Reg w) (src : RegOrMem w) (cnt : Reg w) -- {_ : 32 <= w.bits}
+  | shrx (dst : Reg w) (src : RegOrMem w) (cnt : Reg w) -- {_ : 32 <= w.bits}
+  | sarx (dst : Reg w) (src : RegOrMem w) (cnt : Reg w) -- {_ : 32 <= w.bits}
   | shld (_ : Dst w) (src : Reg w) (_ : ShiftCountExpr) -- {_ : 16 <= w.bits}
   | shrd (_ : Dst w) (src : Reg w) (_ : ShiftCountExpr) -- {_ : 16 <= w.bits}
   | rol  (_ : Dst w) (_ : ShiftCountExpr)
