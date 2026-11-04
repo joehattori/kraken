@@ -424,6 +424,30 @@ syntax withPosition(&"rep" lineEq &"movsb") : x64_instr
 syntax withPosition(&"rep" lineEq &"movsw") : x64_instr
 syntax withPosition(&"rep" lineEq &"movsl") : x64_instr
 syntax withPosition(&"rep" lineEq &"movsq") : x64_instr
+syntax &"cmpsb" : x64_instr
+syntax &"cmpsw" : x64_instr
+syntax &"cmpsl" : x64_instr
+syntax &"cmpsq" : x64_instr
+syntax withPosition(&"repe" lineEq &"cmpsb") : x64_instr
+syntax withPosition(&"repe" lineEq &"cmpsw") : x64_instr
+syntax withPosition(&"repe" lineEq &"cmpsl") : x64_instr
+syntax withPosition(&"repe" lineEq &"cmpsq") : x64_instr
+syntax withPosition(&"repz" lineEq &"cmpsb") : x64_instr
+syntax withPosition(&"repz" lineEq &"cmpsw") : x64_instr
+syntax withPosition(&"repz" lineEq &"cmpsl") : x64_instr
+syntax withPosition(&"repz" lineEq &"cmpsq") : x64_instr
+syntax withPosition(&"repne" lineEq &"cmpsb") : x64_instr
+syntax withPosition(&"repne" lineEq &"cmpsw") : x64_instr
+syntax withPosition(&"repne" lineEq &"cmpsl") : x64_instr
+syntax withPosition(&"repne" lineEq &"cmpsq") : x64_instr
+syntax withPosition(&"repnz" lineEq &"cmpsb") : x64_instr
+syntax withPosition(&"repnz" lineEq &"cmpsw") : x64_instr
+syntax withPosition(&"repnz" lineEq &"cmpsl") : x64_instr
+syntax withPosition(&"repnz" lineEq &"cmpsq") : x64_instr
+syntax withPosition(&"rep" lineEq &"cmpsb") : x64_instr
+syntax withPosition(&"rep" lineEq &"cmpsw") : x64_instr
+syntax withPosition(&"rep" lineEq &"cmpsl") : x64_instr
+syntax withPosition(&"rep" lineEq &"cmpsq") : x64_instr
 syntax withPosition(x64_jcc_op lineEq x64_ident) : x64_instr
 
 /-- X64 directive (label declaration, instruction, or Lean term antiquotation). -/

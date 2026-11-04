@@ -1138,12 +1138,49 @@ def parseInstr : Parser Instr := do
     | "movsw" => pure (toInstr .none (w := .W16) (.movs true))
     | "movsl" => pure (toInstr .none (w := .W32) (.movs true))
     | "movsq" => pure (toInstr .none (w := .W64) (.movs true))
+    | "cmpsb" => pure (toInstr .none (w := .W8) (.cmps (some .e)))
+    | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .e)))
+    | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .e)))
+    | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .e)))
     | other => fail s!"unsupported rep instruction: {other}"
+
+  | "repe" | "repz" =>
+    skipHWs
+    let c ← peek?
+    if c == some ';' then
+      let _ ← pchar ';'
+      skipHWs
+    let nextMn ← parseName
+    match nextMn.toLower with
+    | "cmpsb" => pure (toInstr .none (w := .W8) (.cmps (some .e)))
+    | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .e)))
+    | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .e)))
+    | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .e)))
+    | other => fail s!"unsupported repe instruction: {other}"
+
+  | "repne" | "repnz" =>
+    skipHWs
+    let c ← peek?
+    if c == some ';' then
+      let _ ← pchar ';'
+      skipHWs
+    let nextMn ← parseName
+    match nextMn.toLower with
+    | "cmpsb" => pure (toInstr .none (w := .W8) (.cmps (some .ne)))
+    | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .ne)))
+    | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .ne)))
+    | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .ne)))
+    | other => fail s!"unsupported repne instruction: {other}"
 
   | "movsb" => pure (toInstr .none (w := .W8) (.movs false))
   | "movsw" => pure (toInstr .none (w := .W16) (.movs false))
   | "movsl" => pure (toInstr .none (w := .W32) (.movs false))
   | "movsq" => pure (toInstr .none (w := .W64) (.movs false))
+
+  | "cmpsb" => pure (toInstr .none (w := .W8) (.cmps none))
+  | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps none))
+  | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps none))
+  | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps none))
 
   | "call" | "callq" =>
     let ( addr_w, target ) ← parseRelRegOrMem

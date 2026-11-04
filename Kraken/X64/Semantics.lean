@@ -858,6 +858,36 @@ set_option maxHeartbeats 1000000
     if rep && s.regs.get c == 0
     then next s
     else step_body s
+  | .cmps rep =>
+    let aw := address_size.address_size
+    let c := Reg.low .rcx aw
+    let step_body (s : MachineData) : Effects :=
+      let src_addr := (s.regs.get (Reg.low .rsi aw)).zeroExtend 64
+      let dst_addr := (s.regs.get (Reg.low .rdi aw)).zeroExtend 64
+      s.load src_addr w (fun val_rsi s =>
+      s.load dst_addr w (fun val_rdi s =>
+      let v := val_rsi - val_rdi
+      let status := .from_result v {
+        cf := v.unsigned != val_rsi.unsigned - val_rdi.unsigned,
+        af := (v.take 4).unsigned != (val_rsi.take 4).unsigned - (val_rdi.take 4).unsigned,
+        of := v.signed != val_rsi.signed - val_rdi.signed,
+        df := s.status.df }
+      let s := { s with status }
+      let s := (s.strStep .rsi w aw).strStep .rdi w aw
+      if let some cond := rep then
+        let count := s.regs.get c - 1
+        let s := s.setReg c count
+        let continueLoop := match cond with
+          | .e => s.status.zf
+          | .ne => !s.status.zf
+        if count != 0 && continueLoop
+        then jmp p.lower s
+        else next s
+      else
+        next s))
+    if rep.isSome && s.regs.get c == 0
+    then next s
+    else step_body s
   | .cld => next { s with status := { s.status with df := false } }
   | .std => next { s with status := { s.status with df := true } }
   | nop _ | nopalign _ _ => next s

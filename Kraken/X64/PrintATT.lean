@@ -124,6 +124,13 @@ def operation {w} (aw : Width) (op : Operation w) : String :=
     let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "l" | .W64 => "q"
     let pfx := if rep then "rep " else ""
     s!"{pfx}movs{sfx}"
+  | .cmps rep =>
+    let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "l" | .W64 => "q"
+    let pfx := match rep with
+      | none => ""
+      | some .e => "repe "
+      | some .ne => "repne "
+    s!"{pfx}cmps{sfx}"
   | .cld => "cld"
   | .std => "std"
   | .nop 1 => "nop"
