@@ -256,6 +256,16 @@ inductive AvxOperation (w : AvxWidth)
   | pshufd (_ : AvxDst w) (src : AvxRegOrMem w) (imm : ConstExpr)
   | palignr (_ : AvxDst w) (src : AvxRegOrMem w) (imm : ConstExpr)
   | pblendw (_ : AvxDst w) (src : AvxRegOrMem w) (imm : ConstExpr)
+  -- VEX moves, which clear every bit above what they write
+  | vmovdqu (_ : AvxDst w) (src : AvxRegOrMem w)
+  -- `vmovd` when `n` is 32 bits, `vmovq` when it is 64
+  | vmovIn (n : Width) (_ : AvxReg w) (src : RegOrMem n)
+  | vmovOut (n : Width) (_ : Dst n) (src : AvxReg w)
+  | vmovq (_ : AvxReg w) (src : AvxReg w)
+  | vzeroupper
+  -- AVX/AVX2 packed compare and mask extraction
+  | vpcmpeqb (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  | vpmovmskb (dst : Dst .W32) (src : AvxReg w)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 inductive Instr

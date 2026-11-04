@@ -515,12 +515,20 @@ def elabExtMovOp (stx : TSyntax `x64_ext_mov_op) : TermElabM (Expr × Width × W
 def elabAvxOp (stx : TSyntax `x64_avx_op) : TermElabM Expr := withRef stx do
   let (stem, sfx) ← splitSuffixed stx
   match stem, sfx with
-  | "movu",  "ps" => pure (mkConst ``AvxOperation.movups)
-  | "vmovu", "ps" => pure (mkConst ``AvxOperation.vmovups)
-  | "mova",  "ps" => pure (mkConst ``AvxOperation.movaps)
-  | "add",   "ps" => pure (mkConst ``AvxOperation.addps)
-  | "sub",   "ps" => pure (mkConst ``AvxOperation.subps)
-  | _, _          => throwError "invalid AVX mnemonic"
+  | "movu",    "ps" => pure (mkConst ``AvxOperation.movups)
+  | "vmovu",   "ps" => pure (mkConst ``AvxOperation.vmovups)
+  | "vmovdqu", ""   => pure (mkConst ``AvxOperation.vmovdqu)
+  | "mova",    "ps" => pure (mkConst ``AvxOperation.movaps)
+  | "add",     "ps" => pure (mkConst ``AvxOperation.addps)
+  | "sub",     "ps" => pure (mkConst ``AvxOperation.subps)
+  | _, _            => throwError "invalid AVX mnemonic"
+
+/-- The scalar width (`W32` for `vmovd`, `W64` for `vmovq`) of an `x64_vmov_op`. -/
+def evalVmovWidth (stx : TSyntax `x64_vmov_op) : TermElabM Width := withRef stx do
+  match ← getAffixedStem stx with
+  | "vmovd" => pure .W32
+  | "vmovq" => pure .W64
+  | stem    => throwError "invalid VEX move mnemonic '{stem}'"
 
 /-- The `Operation` constructor of an `x64_shift_op`. -/
 def elabShiftOp (stx : TSyntax `x64_shift_op) : TermElabM Expr := withRef stx do
@@ -636,6 +644,35 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
     let src ← elabAvxRegOrMem src
     let dst ← elabAvxRegOrMem dst
     mkAvxInstr (← mkAppWidth mk #[dst, src])
+  | `(x64_instr| vmovq $src:x64_avx_reg, $dst:x64_avx_reg) =>
+    setOperandWidth (toExpr AvxWidth.W128)
+    let src ← elabAvxReg src
+    let dst ← elabAvxReg dst
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vmovq) #[dst, src])
+  | `(x64_instr| $op:x64_vmov_op $src:x64_avx_reg, $dst:x64_reg_or_mem) =>
+    let n ← evalVmovWidth op
+    setOperandWidth (toExpr AvxWidth.W128)
+    let src ← elabAvxReg src
+    let (dst, _) ← withOperandWidth (some n) (elabRegOrMem dst)
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vmovOut) #[toExpr n, dst, src])
+  | `(x64_instr| $op:x64_vmov_op $src:x64_reg_or_mem, $dst:x64_avx_reg) =>
+    let n ← evalVmovWidth op
+    setOperandWidth (toExpr AvxWidth.W128)
+    let (src, _) ← withOperandWidth (some n) (elabRegOrMem src)
+    let dst ← elabAvxReg dst
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vmovIn) #[toExpr n, dst, src])
+  | `(x64_instr| vzeroupper) =>
+    pure (toExpr (Instr.avx .W64 .W128 .vzeroupper))
+  | `(x64_instr| vpcmpeqb $src2:x64_avx_operand, $src1:x64_avx_reg, $dst:x64_avx_reg) =>
+    let src1 ← elabAvxReg src1
+    let dst ← elabAvxReg dst
+    let src2 ← elabAvxRegOrMem src2
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpcmpeqb) #[dst, src1, src2])
+  | `(x64_instr| vpmovmskb $src:x64_avx_reg, $dst:x64_reg) =>
+    let (dstReg, _) ← withOperandWidth (some .W32) (elabReg dst)
+    let dst := mkApp2 (mkConst ``RegOrMem.reg) (toExpr Width.W32) dstReg
+    let src ← elabAvxReg src
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpmovmskb) #[dst, src])
   | `(x64_instr| $op:x64_shift_op $dst:x64_operand) =>
     let mk ← elabShiftOp op
     setSuffixWidth op

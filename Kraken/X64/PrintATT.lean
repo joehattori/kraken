@@ -121,6 +121,11 @@ def operation {w} (aw : Width) (op : Operation w) : String :=
   | .nopalign a none => s!".align {a}"
   | .nopalign a (some p) => s!".align {a}, {p}"
 
+def vmovName (n : Width) : String := match n with
+  | .W32 => "vmovd"
+  | .W64 => "vmovq"
+  | _ => "vmov"
+
 def avxOperation {w} (aw : Width) (op : AvxOperation w) : String :=
   let two (mn : String) {w} (d x : AvxRegOrMem w) := s!"{mn} {avxRm aw x}, {avxRm aw d}"
   match op with
@@ -136,6 +141,13 @@ def avxOperation {w} (aw : Width) (op : AvxOperation w) : String :=
   | .pshufd d x i => s!"pshufd ${const i}, {avxRm aw x}, {avxRm aw d}"
   | .palignr d x i => s!"palignr ${const i}, {avxRm aw x}, {avxRm aw d}"
   | .pblendw d x i => s!"pblendw ${const i}, {avxRm aw x}, {avxRm aw d}"
+  | .vmovdqu d x => two "vmovdqu" d x
+  | .vmovIn n d x => s!"{vmovName n} {rm aw x}, {avxReg d}"
+  | .vmovOut n d x => s!"{vmovName n} {avxReg x}, {rm aw d}"
+  | .vmovq d x => s!"vmovq {avxReg x}, {avxReg d}"
+  | .vzeroupper => "vzeroupper"
+  | .vpcmpeqb d s1 s2 => s!"vpcmpeqb {avxRm aw s2}, {avxReg s1}, {avxReg d}"
+  | .vpmovmskb d s => s!"vpmovmskb {avxReg s}, {rm aw d}"
 
 def instr : Instr → String
   | .regular aw _ op => operation aw op

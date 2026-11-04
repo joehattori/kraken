@@ -174,6 +174,11 @@ def Operation.toStr {w} (op : Operation w) (addr_w : Width := .W64) : String := 
   | .nopalign a (some p) => s!".align {a}, {p}"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
+def vmovName (n : Width) : String := match n with
+  | .W32 => "vmovd"
+  | .W64 => "vmovq"
+  | _ => "vmov"
+
 def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : String := match op with
   | .movups dst src => s!"movups {dst.toStr addr_w}, {src.toStr addr_w}"
   | .vmovups dst src => s!"vmovups {dst.toStr addr_w}, {src.toStr addr_w}"
@@ -187,6 +192,13 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .pshufd dst src imm => s!"pshufd {dst.toStr addr_w}, {src.toStr addr_w}, {imm}"
   | .palignr dst src imm => s!"palignr {dst.toStr addr_w}, {src.toStr addr_w}, {imm}"
   | .pblendw dst src imm => s!"pblendw {dst.toStr addr_w}, {src.toStr addr_w}, {imm}"
+  | .vmovdqu dst src => s!"vmovdqu {dst.toStr addr_w}, {src.toStr addr_w}"
+  | .vmovIn n dst src => s!"{vmovName n} {dst}, {src.toStr addr_w}"
+  | .vmovOut n dst src => s!"{vmovName n} {dst.toStr addr_w}, {src}"
+  | .vmovq dst src => s!"vmovq {dst}, {src}"
+  | .vzeroupper => "vzeroupper"
+  | .vpcmpeqb dst src1 src2 => s!"vpcmpeqb {dst}, {src1}, {src2.toStr addr_w}"
+  | .vpmovmskb dst src => s!"vpmovmskb {dst.toStr addr_w}, {src}"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
 instance : ToString Instr where

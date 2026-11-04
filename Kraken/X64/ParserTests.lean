@@ -573,6 +573,37 @@ info: [Directive.instr
 #guard_msgs in
 #check [x64| vmovups (%rax), %❰v❱ ]
 
+/--
+info: [Directive.instr
+    (avx Width.W64 AvxWidth.W256
+      (AvxOperation.vmovdqu ↑v ↑{ base := some (RegOrRip.reg Reg64.rax), idx := none }))] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64| vmovdqu (%rax), %❰v❱ ]
+
+/--
+info: [Directive.instr (avx Width.W64 AvxWidth.W128 AvxOperation.vzeroupper)] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64| vzeroupper ]
+
+/--
+info: [Directive.instr
+    (avx Width.W64 AvxWidth.W256
+      (AvxOperation.vpcmpeqb (AvxReg.ymm RegMm.mm0) (AvxReg.ymm RegMm.mm0)
+        ↑(AvxReg.ymm RegMm.mm1)))] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64| vpcmpeqb %ymm1, %ymm0, %ymm0 ]
+
+/--
+info: [Directive.instr
+    (avx Width.W64 AvxWidth.W256
+      (AvxOperation.vpmovmskb (↑(low Reg64.rax Width.W32)) (AvxReg.ymm RegMm.mm0)))] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64| vpmovmskb %ymm0, %eax ]
+
 -- Test: a width that no operand or suffix determines is an error
 /-- error: could not infer operand width -/
 #guard_msgs in

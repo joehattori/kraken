@@ -310,6 +310,15 @@ syntax_affixed (suffixes := avx_ps) "mova" : x64_avx_op
 syntax_affixed (suffixes := avx_ps) "add" : x64_avx_op
 /-- Subtract packed floating-point values. -/
 syntax_affixed (suffixes := avx_ps) "sub" : x64_avx_op
+/-- Move unaligned packed integers. -/
+syntax_affixed "vmovdqu" : x64_avx_op
+
+/-- VEX move mnemonics with explicit 32- or 64-bit scalar operand (`vmovd`, `vmovq`). -/
+declare_syntax_cat x64_vmov_op (behavior := both)
+/-- Move 32-bit scalar into or out of vector register. -/
+syntax &"vmovd" : x64_vmov_op
+/-- Move 64-bit scalar into or out of vector register. -/
+syntax &"vmovq" : x64_vmov_op
 
 /-- Shift and rotate mnemonics (1- or 2-operand forms). -/
 declare_syntax_cat x64_shift_op (behavior := both)
@@ -378,6 +387,12 @@ syntax withPosition(&"movzx" lineEq x64_reg "," lineEq x64_reg) : x64_instr
 syntax withPosition(x64_ext_mov_op lineEq x64_operand "," lineEq x64_reg) : x64_instr
 syntax withPosition(x64_lea_op lineEq x64_mem "," lineEq x64_reg) : x64_instr
 syntax withPosition(x64_avx_op lineEq x64_avx_operand "," lineEq x64_avx_operand) : x64_instr
+syntax withPosition(&"vmovq" lineEq x64_avx_reg "," lineEq x64_avx_reg) : x64_instr
+syntax withPosition(x64_vmov_op lineEq x64_avx_reg "," lineEq x64_reg_or_mem) : x64_instr
+syntax withPosition(x64_vmov_op lineEq x64_reg_or_mem "," lineEq x64_avx_reg) : x64_instr
+syntax &"vzeroupper" : x64_instr
+syntax withPosition(&"vpcmpeqb" lineEq x64_avx_operand "," lineEq x64_avx_reg "," lineEq x64_avx_reg) : x64_instr
+syntax withPosition(&"vpmovmskb" lineEq x64_avx_reg "," lineEq x64_reg) : x64_instr
 syntax withPosition(x64_shift_op lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shift_op lineEq x64_shift_count "," lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shd_op lineEq x64_shift_count "," lineEq x64_reg "," lineEq x64_operand) : x64_instr
