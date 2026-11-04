@@ -104,4 +104,48 @@ public theorem Host.directivesAtAddress_addrOf {k : Nat} {c : Kraken.Sized Direc
   · intro c hc
     grind [Kraken.Executable.getElem?_withAddresses_eq]
 
+@[grind =] public theorem Host.addrOf_def (k : Nat) :
+    Host.addrOf k = Host.exe.startAddr + .ofNat (Host.exe.sizeBefore k) := rfl
+
+@[grind →] public theorem Host.sizeBefore_succ {k : Nat} {d : Directive} (hd : Host.prog[k]? = some d) :
+    Host.exe.sizeBefore (k + 1) = Host.exe.sizeBefore k + Kraken.Layout.size Instr k :=
+  Host.exe.sizeBefore_succ (c := {directive := d, size := Kraken.Layout.size Instr k})
+    (by rw [Host.exe_getElem?, hd]; rfl)
+
+public theorem Host.sizeBefore_mono {j k : Nat} (h : j ≤ k) : Host.exe.sizeBefore j ≤ Host.exe.sizeBefore k :=
+  Host.exe.sizeBefore_mono h
+
+grind_pattern Host.sizeBefore_mono => Host.exe.sizeBefore j, Host.exe.sizeBefore k
+
+end
+
+public structure Embedding [Host] (p : Program) where
+  start : Nat
+  isInfixAt : p.IsInfixAt Host.prog start
+
+section
+variable [Host]
+
+@[expose] public def Embedding.startAddr {p : Program} (e : Embedding p) : Int64 := Host.addrOf e.start
+
+@[expose] public def Embedding.endAddr {p : Program} (e : Embedding p) : Int64 :=
+  Host.addrOf (e.start + p.length)
+
+@[grind =] public theorem Embedding.startAddr_def {p : Program} (e : Embedding p) :
+    e.startAddr = Host.addrOf e.start := rfl
+
+@[grind =] public theorem Embedding.endAddr_def {p : Program} (e : Embedding p) :
+    e.endAddr = Host.addrOf (e.start + p.length) := rfl
+
+@[expose] public def Embedding.head {d : Directive} {p : Program} (e : Embedding (d :: p)) : Embedding [d] :=
+  ⟨e.start, e.isInfixAt.head⟩
+
+@[expose] public def Embedding.tail {d : Directive} {p : Program} (e : Embedding (d :: p)) : Embedding p :=
+  ⟨e.start + 1, e.isInfixAt.tail⟩
+
+@[simp, grind norm] public theorem Embedding.head_start {d : Directive} {p : Program} (e : Embedding (d :: p)) :
+    e.head.start = e.start := rfl
+
+@[simp, grind norm] public theorem Embedding.tail_start {d : Directive} {p : Program} (e : Embedding (d :: p)) :
+    e.tail.start = e.start + 1 := rfl
 end

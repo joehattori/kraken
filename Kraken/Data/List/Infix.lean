@@ -35,6 +35,13 @@ theorem IsInfixAt.cons (h : (d :: l₁).IsInfixAt l₂ k) : l₂[k]? = some d �
   rw [drop_eq_getElem_cons hk, cons_prefix_iff] at h
   grind
 
+theorem IsInfixAt.head (h : (d :: l₁).IsInfixAt l₂ k) : [d].IsInfixAt l₂ k := by
+  obtain ⟨t, ht⟩ := h
+  exact ⟨l₁ ++ t, by rw [← ht]; rfl⟩
+
+theorem IsInfixAt.tail (h : (d :: l₁).IsInfixAt l₂ k) : l₁.IsInfixAt l₂ (k + 1) :=
+  h.cons.2
+
 theorem IsInfixAt.append (h : (a ++ b).IsInfixAt l₂ k) :
     a.IsInfixAt l₂ k ∧ b.IsInfixAt l₂ (k + a.length) := by
   obtain ⟨t, ht⟩ := h
