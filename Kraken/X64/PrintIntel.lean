@@ -173,6 +173,10 @@ def Operation.toStr {w} (op : Operation w) (addr_w : Width := .W64) : String := 
   | .jmp tgt => s!"jmp {tgt.toStr addr_w}"
   | .call tgt => s!"call {tgt.toStr addr_w}"
   | .ret => "ret"
+  | .movs rep =>
+    let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "d" | .W64 => "q"
+    let pfx := if rep then "rep " else ""
+    s!"{pfx}movs{sfx}"
   | .cld => "cld"
   | .std => "std"
   | .nop n => s!".nops {n}"

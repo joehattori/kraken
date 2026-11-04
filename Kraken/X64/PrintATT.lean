@@ -120,6 +120,10 @@ def operation {w} (aw : Width) (op : Operation w) : String :=
   | .jmp t => s!"jmp {target aw t}"
   | .call t => s!"call {target aw t}"
   | .ret => "ret"
+  | .movs rep =>
+    let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "l" | .W64 => "q"
+    let pfx := if rep then "rep " else ""
+    s!"{pfx}movs{sfx}"
   | .cld => "cld"
   | .std => "std"
   | .nop 1 => "nop"

@@ -448,6 +448,12 @@ def MachineData.setAvxLegacyReg (s : MachineData) {w : AvxWidth} (r : AvxReg w) 
   { s with zmms := s.zmms.setLegacy r v }
 
 @[kstep]
+def MachineData.strStep (s : MachineData) (r : Reg64) (w : Width) (aw : Width := .W64) : MachineData :=
+  let reg := Reg.low r aw
+  let step : BitVec aw.bits := if s.status.df then -w.bytesv else w.bytesv
+  s.setReg reg (s.regs.get reg + step)
+
+@[kstep]
 def MachineData.set {w} [Labels] [AddressSize] (s : MachineData) (d : Dst w) (v : w.type) (p : Std.Rco Int64) (ret : MachineData → Effects) : Effects :=
   match d with
   | .reg r => ret (s.setReg r v)
@@ -834,6 +840,24 @@ set_option maxHeartbeats 1000000
     let rsp := s.regs.get64 .rsp
     s.load rsp .W64 (fun ra s =>
     jmp (.ofBitVec ra) { s with regs := s.regs.set64 .rsp (rsp + 8) })
+  | .movs rep =>
+    let aw := address_size.address_size
+    let c := Reg.low .rcx aw
+    let step_body (s : MachineData) : Effects :=
+      let src_addr := (s.regs.get (Reg.low .rsi aw)).zeroExtend 64
+      let dst_addr := (s.regs.get (Reg.low .rdi aw)).zeroExtend 64
+      s.load src_addr w (fun val s =>
+      s.store (w := w) dst_addr val (fun s =>
+      let s := (s.strStep .rsi w aw).strStep .rdi w aw
+      if rep then
+        let count := s.regs.get c - 1
+        let s := s.setReg c count
+        if count != 0 then jmp p.lower s else next s
+      else
+        next s))
+    if rep && s.regs.get c == 0
+    then next s
+    else step_body s
   | .cld => next { s with status := { s.status with df := false } }
   | .std => next { s with status := { s.status with df := true } }
   | nop _ | nopalign _ _ => next s

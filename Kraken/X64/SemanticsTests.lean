@@ -12,6 +12,13 @@ private partial def accessChecks :
   | .require_write_access p ok => (accessChecks (ok ())).map fun (rs, ws) => (rs, (p.lower.val, p.upper.val) :: ws)
   | _ => none
 
+private partial def runEffects : Effects → Option MachineData
+  | .done ⟨s, _⟩ => some s
+  | .require_read_access _ ok => runEffects (ok ())
+  | .require_write_access _ ok => runEffects (ok ())
+  | .require_exec_access _ ok => runEffects (ok ())
+  | _ => none
+
 /-- 64 bytes of data memory at `0x1000`. -/
 private def s : MachineData := { dmem := (List.replicate 64 0).At 0x1000 }
 
@@ -105,4 +112,35 @@ private def wrapping : MachineData :=
   match Operation.interp (w := .W64) (address_size := .mk .W64) (.loop (some .e) "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt s' => Effects.done ⟨s', tgt⟩) with
   | .done ⟨_, tgt⟩ => tgt == 0
   | _ => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0).At 0x1000 }
+  let s := (base.setReg (Reg.low .rsi .W64) 0x1000).setReg (Reg.low .rdi .W64) 0x1020
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.movs false) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.regs.get (Reg.low .rsi .W64) == 0x1001 &&
+    s'.regs.get (Reg.low .rdi .W64) == 0x1021
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0).At 0x1000 }
+  let s := { (base.setReg (Reg.low .rsi .W64) 0x1000).setReg (Reg.low .rdi .W64) 0x1020 with status := { (default : StatusFlags) with df := true } }
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.movs false) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.regs.get (Reg.low .rsi .W64) == 0x0fff &&
+    s'.regs.get (Reg.low .rdi .W64) == 0x101f
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0).At 0x1000 }
+  let s := (base.setReg (Reg.low .rsi .W64) 0x1000).setReg (Reg.low .rdi .W64) 0x1020
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.movs true) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.regs.get (Reg.low .rcx .W64) == 0 &&
+    s'.regs.get (Reg.low .rsi .W64) == 0x1000
+  | none => false
+
 

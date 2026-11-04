@@ -416,6 +416,14 @@ syntax withPosition(&"loope" lineEq x64_ident) : x64_instr
 syntax withPosition(&"loopz" lineEq x64_ident) : x64_instr
 syntax withPosition(&"loopne" lineEq x64_ident) : x64_instr
 syntax withPosition(&"loopnz" lineEq x64_ident) : x64_instr
+syntax &"movsb" : x64_instr
+syntax &"movsw" : x64_instr
+syntax &"movsl" : x64_instr
+syntax &"movsq" : x64_instr
+syntax withPosition(&"rep" lineEq &"movsb") : x64_instr
+syntax withPosition(&"rep" lineEq &"movsw") : x64_instr
+syntax withPosition(&"rep" lineEq &"movsl") : x64_instr
+syntax withPosition(&"rep" lineEq &"movsq") : x64_instr
 syntax withPosition(x64_jcc_op lineEq x64_ident) : x64_instr
 
 /-- X64 directive (label declaration, instruction, or Lean term antiquotation). -/

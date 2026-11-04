@@ -1126,6 +1126,25 @@ def parseInstr : Parser Instr := do
   | "std" =>
     pure (toInstr .none (w := .W64) .std)
 
+  | "rep" =>
+    skipHWs
+    let c ← peek?
+    if c == some ';' then
+      let _ ← pchar ';'
+      skipHWs
+    let nextMn ← parseName
+    match nextMn.toLower with
+    | "movsb" => pure (toInstr .none (w := .W8) (.movs true))
+    | "movsw" => pure (toInstr .none (w := .W16) (.movs true))
+    | "movsl" => pure (toInstr .none (w := .W32) (.movs true))
+    | "movsq" => pure (toInstr .none (w := .W64) (.movs true))
+    | other => fail s!"unsupported rep instruction: {other}"
+
+  | "movsb" => pure (toInstr .none (w := .W8) (.movs false))
+  | "movsw" => pure (toInstr .none (w := .W16) (.movs false))
+  | "movsl" => pure (toInstr .none (w := .W32) (.movs false))
+  | "movsq" => pure (toInstr .none (w := .W64) (.movs false))
+
   | "call" | "callq" =>
     let ( addr_w, target ) ← parseRelRegOrMem
     pure (toInstr addr_w (w := .W64) (.call target))

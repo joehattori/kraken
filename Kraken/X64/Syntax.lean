@@ -239,6 +239,8 @@ inductive Operation (w : Width)
   | jmp (target : RelRegOrMem)
   | call (target : RelRegOrMem)
   | ret
+  -- String operations
+  | movs (rep : Bool)
   | cld
   | std
   | nop (length : Nat)
