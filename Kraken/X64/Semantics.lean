@@ -275,6 +275,7 @@ structure StatusFlags where
   af : Bool
   zf : Bool
   sf : Bool
+  df : Bool
   of : Bool
   deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
@@ -283,7 +284,7 @@ instance : Repr DataMem where reprPrec _ _ := "<opaque memory>"
 structure MachineData where -- does not include code or program position
   regs : Reg64s := {}
   zmms : RegZmms := {}
-  status : StatusFlags := .mk false false false false false false
+  status : StatusFlags := .mk false false false false false false false
   dmem : DataMem := ∅
   deriving Repr, BEq, DecidableEq
 
@@ -297,7 +298,7 @@ class inductive NondetSupportingType : Type -> Type
 def NondetSupportingType.from_hash {α} [t : NondetSupportingType α] (h : UInt64) : α :=
   match t with
   | .bool => h % 2 != 0
-  | .statusFlags => let h := h.toBitVec; (.mk h[0] h[1] h[2] h[3] h[4] h[5])
+  | .statusFlags => let h := h.toBitVec; (.mk h[0] h[1] h[2] h[3] h[4] h[5] h[6])
   | .bitvec w => h.toBitVec.setWidth w.bits
   | .avx_bitvec w => h.toBitVec.setWidth w.bits
 
@@ -505,6 +506,7 @@ structure StatusFlags.from_result.Remaining where
   cf : Bool
   af : Bool
   of : Bool
+  df : Bool
   deriving Repr, BEq, DecidableEq
 
 -- TEMPORARY: definitions stolen from Lean 4.28's standard library, but with a
@@ -521,7 +523,7 @@ end BitVec
 @[kstep] def StatusFlags.from_result {w} (result : BitVec w) (f : from_result.Remaining) : StatusFlags :=
   { pf := (result.take 8).cpop_ % 2 == BitVec.zero _
     zf := result == BitVec.zero _
-    sf := result.msb, cf := f.cf, af := f.af, of := f.of }
+    sf := result.msb, cf := f.cf, af := f.af, of := f.of, df := f.df }
 
 
 
@@ -557,7 +559,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := v.unsigned != a.unsigned + b.unsigned
       af := (v.take 4).unsigned != (a.take 4).unsigned + (b.take 4).unsigned,
-      of := v.signed != a.signed + b.signed }
+      of := v.signed != a.signed + b.signed
+      df := s.status.df }
     { s with status }.set dst v p next))
   | .adc dst src =>
     src.interp s p (fun a s =>
@@ -567,7 +570,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := v.unsigned != a.unsigned + b.unsigned + c
       af := (v.take 4).unsigned != (a.take 4).unsigned + (b.take 4).unsigned + c,
-      of := v.signed != a.signed + b.signed + c }
+      of := v.signed != a.signed + b.signed + c
+      df := s.status.df }
     { s with status }.set dst v p next))
   | .adcx dst src =>
     src.interp s p (fun a s =>
@@ -587,7 +591,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := s.status.cf
       af := (v.take 4).unsigned != (a.take 4).unsigned + 1,
-      of := v.signed != a.signed + 1 }
+      of := v.signed != a.signed + 1
+      df := s.status.df }
     { s with status }.set dst v p next)
   | .dec dst =>
     dst.interp s p (fun a s =>
@@ -595,7 +600,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := s.status.cf
       af := (v.take 4).unsigned != (a.take 4).unsigned - 1,
-      of := v.signed != a.signed - 1 }
+      of := v.signed != a.signed - 1
+      df := s.status.df }
     { s with status }.set dst v p next)
   | .neg dst =>
     dst.interp s p (fun b s =>
@@ -603,7 +609,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := b != 0
       af := (b.take 4) != 0,
-      of := v.signed != - b.signed }
+      of := v.signed != - b.signed
+      df := s.status.df }
     { s with status }.set dst v p next)
   | .sub dst src =>
     src.interp s p (fun a s =>
@@ -612,7 +619,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := v.unsigned != b.unsigned - a.unsigned
       af := (v.take 4).unsigned != (b.take 4).unsigned - (a.take 4).unsigned,
-      of := v.signed != b.signed - a.signed }
+      of := v.signed != b.signed - a.signed
+      df := s.status.df }
     { s with status }.set dst v p next))
   | .sbb dst src =>
     src.interp s p (fun a s =>
@@ -622,7 +630,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := v.unsigned != b.unsigned - a.unsigned - c
       af := (v.take 4).unsigned != (b.take 4).unsigned - (a.take 4).unsigned - c,
-      of := v.signed != b.signed - a.signed - c }
+      of := v.signed != b.signed - a.signed - c
+      df := s.status.df }
     { s with status }.set dst v p next))
   | .cmp a b =>
     a.interp s p (fun a s =>
@@ -631,7 +640,8 @@ set_option maxHeartbeats 1000000
     let status := .from_result v {
       cf := v.unsigned != a.unsigned - b.unsigned
       af := (v.take 4).unsigned != (a.take 4).unsigned - (b.take 4).unsigned,
-      of := v.signed != a.signed - b.signed }
+      of := v.signed != a.signed - b.signed
+      df := s.status.df }
     next { s with status }))
   | .mul src =>
     let a := s.regs.get (Reg.low .rax w)
@@ -642,7 +652,7 @@ set_option maxHeartbeats 1000000
       then s.setReg (.low .rax .W16) (.ofInt _ vn)
       else (s.setReg (.low .rax w) v).setReg (.low .rdx w) (.ofInt _ (vn >>> w.bits))
     undefined (λ sf => undefined (λ zf => undefined (λ af => undefined (λ pf =>
-    next { s with status := { cf := v.unsigned != vn, pf, af, zf, sf, of := v.unsigned != vn }})))))
+    next { s with status := { cf := v.unsigned != vn, pf, af, zf, sf, of := v.unsigned != vn, df := s.status.df }})))))
   | .mulx r_hi r_lo src1 =>
     src1.interp s p (fun a s =>
     let b := s.regs.get (.low .rdx w)
@@ -666,7 +676,7 @@ set_option maxHeartbeats 1000000
     undefined (λ sf => undefined (λ zf => undefined (λ af => undefined (λ pf =>
     let low := BitVec.ofInt w.bits v
     let cf := v != low.toInt
-    next { s with status := { cf := cf, pf, af, zf, sf, of := cf }})))))
+    next { s with status := { cf := cf, pf, af, zf, sf, of := cf, df := s.status.df }})))))
   | .imul dst src1 src2 =>
     src1.interp s p (fun a s =>
     src2.interp s p (fun b s =>
@@ -675,21 +685,21 @@ set_option maxHeartbeats 1000000
              dst with | .some dst => dst | _ => src1) v p (fun s =>
     let cf := v.signed != a.signed * b.signed
     undefined (λ sf => undefined (λ zf => undefined (λ af => undefined (λ pf =>
-    next { s with status := { cf := cf, pf, af, zf, sf, of := cf }})))))))
+    next { s with status := { cf := cf, pf, af, zf, sf, of := cf, df := s.status.df }})))))))
 -- Bitwise
   | .test a b =>
     a.interp s p (fun a s =>
     b.interp s p (fun b s =>
     let v := a &&& b
     undefined (fun af =>
-    let status := .from_result v { cf := false, af, of := false}
+    let status := .from_result v { cf := false, af, of := false, df := s.status.df }
     next { s with status})))
   | .and dst src | .or dst src | .xor dst src =>
     dst.interp s p (fun a s =>
     src.interp s p (fun b s =>
     let v := match i with | .and _ _ => a &&& b | .or _ _ => a ||| b | _ => a ^^^ b
     undefined (fun af =>
-    let status := .from_result v { cf := false, of := false, af }
+    let status := .from_result v { cf := false, of := false, af, df := s.status.df }
     { s with status }.set dst v p next)))
   | .not dst =>
     dst.interp s p (fun a s =>
@@ -733,7 +743,7 @@ set_option maxHeartbeats 1000000
       let cf := a.getLsbD (count-1)
       undefined (λ af =>
       (λ setof => if count == 1 then setof (v.msb != a.msb) else undefined setof) (λ of =>
-      setstatus (.from_result v { cf, af, of})))) (λ status =>
+      setstatus (.from_result v { cf, af, of, df := s.status.df })))) (λ status =>
     -- The result is undefined if the count exceeds the operand size (only possible for 16 bits).
     (λ setv => if count > w.bits then undefined setv else setv v) (λ v =>
     { s with status }.set dst v p next))))
@@ -747,7 +757,7 @@ set_option maxHeartbeats 1000000
       let cf := (a <<< (count-1)).msb
       undefined (λ af =>
       (λ setof => if count == 1 then setof (v.msb != a.msb) else undefined setof) (λ of =>
-      setstatus (.from_result v { cf, af, of})))) (λ status =>
+      setstatus (.from_result v { cf, af, of, df := s.status.df })))) (λ status =>
     (λ setv => if count > w.bits then undefined setv else setv v) (λ v =>
     { s with status }.set dst v p next))))
   | .rol dst count =>
