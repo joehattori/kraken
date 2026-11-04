@@ -242,6 +242,7 @@ inductive Operation (w : Width)
   -- String operations
   | movs (rep : Bool)
   | cmps (rep : Option ZfCond)
+  | scas (rep : Option ZfCond)
   | cld
   | std
   | nop (length : Nat)

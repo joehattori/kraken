@@ -131,6 +131,13 @@ def operation {w} (aw : Width) (op : Operation w) : String :=
       | some .e => "repe "
       | some .ne => "repne "
     s!"{pfx}cmps{sfx}"
+  | .scas rep =>
+    let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "l" | .W64 => "q"
+    let pfx := match rep with
+      | none => ""
+      | some .e => "repe "
+      | some .ne => "repne "
+    s!"{pfx}scas{sfx}"
   | .cld => "cld"
   | .std => "std"
   | .nop 1 => "nop"

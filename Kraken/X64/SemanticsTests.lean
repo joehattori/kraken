@@ -175,4 +175,34 @@ private def wrapping : MachineData :=
     s'.regs.get (Reg.low .rsi .W64) == 0x1000
   | none => false
 
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0x42).At 0x1000 }
+  let s := (base.setReg (Reg.low .rax .W8) 0x42).setReg (Reg.low .rdi .W64) 0x1020
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.scas none) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.status.zf == true &&
+    s'.regs.get (Reg.low .rdi .W64) == 0x1021
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0x43).At 0x1000 }
+  let s := (base.setReg (Reg.low .rax .W8) 0x42).setReg (Reg.low .rdi .W64) 0x1020
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.scas none) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.status.zf == false &&
+    s'.regs.get (Reg.low .rdi .W64) == 0x1021
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := { dmem := (List.replicate 64 0).At 0x1000 }
+  let s := (base.setReg (Reg.low .rax .W8) 0x42).setReg (Reg.low .rdi .W64) 0x1020
+  match runEffects (Operation.interp (w := .W8) (address_size := .mk .W64) (.scas (some .e)) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun _ _ => Effects.done ⟨{}, 1⟩)) with
+  | some s' =>
+    s'.regs.get (Reg.low .rcx .W64) == 0 &&
+    s'.regs.get (Reg.low .rdi .W64) == 0x1020
+  | none => false
+
 

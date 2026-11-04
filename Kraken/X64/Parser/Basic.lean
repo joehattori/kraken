@@ -1142,6 +1142,10 @@ def parseInstr : Parser Instr := do
     | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .e)))
     | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .e)))
     | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .e)))
+    | "scasb" => pure (toInstr .none (w := .W8) (.scas (some .e)))
+    | "scasw" => pure (toInstr .none (w := .W16) (.scas (some .e)))
+    | "scasl" => pure (toInstr .none (w := .W32) (.scas (some .e)))
+    | "scasq" => pure (toInstr .none (w := .W64) (.scas (some .e)))
     | other => fail s!"unsupported rep instruction: {other}"
 
   | "repe" | "repz" =>
@@ -1156,6 +1160,10 @@ def parseInstr : Parser Instr := do
     | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .e)))
     | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .e)))
     | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .e)))
+    | "scasb" => pure (toInstr .none (w := .W8) (.scas (some .e)))
+    | "scasw" => pure (toInstr .none (w := .W16) (.scas (some .e)))
+    | "scasl" => pure (toInstr .none (w := .W32) (.scas (some .e)))
+    | "scasq" => pure (toInstr .none (w := .W64) (.scas (some .e)))
     | other => fail s!"unsupported repe instruction: {other}"
 
   | "repne" | "repnz" =>
@@ -1170,6 +1178,10 @@ def parseInstr : Parser Instr := do
     | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps (some .ne)))
     | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps (some .ne)))
     | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps (some .ne)))
+    | "scasb" => pure (toInstr .none (w := .W8) (.scas (some .ne)))
+    | "scasw" => pure (toInstr .none (w := .W16) (.scas (some .ne)))
+    | "scasl" => pure (toInstr .none (w := .W32) (.scas (some .ne)))
+    | "scasq" => pure (toInstr .none (w := .W64) (.scas (some .ne)))
     | other => fail s!"unsupported repne instruction: {other}"
 
   | "movsb" => pure (toInstr .none (w := .W8) (.movs false))
@@ -1181,6 +1193,11 @@ def parseInstr : Parser Instr := do
   | "cmpsw" => pure (toInstr .none (w := .W16) (.cmps none))
   | "cmpsl" => pure (toInstr .none (w := .W32) (.cmps none))
   | "cmpsq" => pure (toInstr .none (w := .W64) (.cmps none))
+
+  | "scasb" => pure (toInstr .none (w := .W8) (.scas none))
+  | "scasw" => pure (toInstr .none (w := .W16) (.scas none))
+  | "scasl" => pure (toInstr .none (w := .W32) (.scas none))
+  | "scasq" => pure (toInstr .none (w := .W64) (.scas none))
 
   | "call" | "callq" =>
     let ( addr_w, target ) ← parseRelRegOrMem

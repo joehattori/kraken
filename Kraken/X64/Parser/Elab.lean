@@ -761,6 +761,18 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
   | `(x64_instr| repne cmpsw) | `(x64_instr| repnz cmpsw) => pure (toExpr (Instr.regular .W64 .W16 (.cmps (some .ne))))
   | `(x64_instr| repne cmpsl) | `(x64_instr| repnz cmpsl) => pure (toExpr (Instr.regular .W64 .W32 (.cmps (some .ne))))
   | `(x64_instr| repne cmpsq) | `(x64_instr| repnz cmpsq) => pure (toExpr (Instr.regular .W64 .W64 (.cmps (some .ne))))
+  | `(x64_instr| scasb) => pure (toExpr (Instr.regular .W64 .W8 (.scas none)))
+  | `(x64_instr| scasw) => pure (toExpr (Instr.regular .W64 .W16 (.scas none)))
+  | `(x64_instr| scasl) => pure (toExpr (Instr.regular .W64 .W32 (.scas none)))
+  | `(x64_instr| scasq) => pure (toExpr (Instr.regular .W64 .W64 (.scas none)))
+  | `(x64_instr| repe scasb) | `(x64_instr| repz scasb) | `(x64_instr| rep scasb) => pure (toExpr (Instr.regular .W64 .W8 (.scas (some .e))))
+  | `(x64_instr| repe scasw) | `(x64_instr| repz scasw) | `(x64_instr| rep scasw) => pure (toExpr (Instr.regular .W64 .W16 (.scas (some .e))))
+  | `(x64_instr| repe scasl) | `(x64_instr| repz scasl) | `(x64_instr| rep scasl) => pure (toExpr (Instr.regular .W64 .W32 (.scas (some .e))))
+  | `(x64_instr| repe scasq) | `(x64_instr| repz scasq) | `(x64_instr| rep scasq) => pure (toExpr (Instr.regular .W64 .W64 (.scas (some .e))))
+  | `(x64_instr| repne scasb) | `(x64_instr| repnz scasb) => pure (toExpr (Instr.regular .W64 .W8 (.scas (some .ne))))
+  | `(x64_instr| repne scasw) | `(x64_instr| repnz scasw) => pure (toExpr (Instr.regular .W64 .W16 (.scas (some .ne))))
+  | `(x64_instr| repne scasl) | `(x64_instr| repnz scasl) => pure (toExpr (Instr.regular .W64 .W32 (.scas (some .ne))))
+  | `(x64_instr| repne scasq) | `(x64_instr| repnz scasq) => pure (toExpr (Instr.regular .W64 .W64 (.scas (some .ne))))
   | `(x64_instr| $op:x64_jcc_op $lbl:x64_ident) =>
     let cc ← evalCondCodeSuffix op
     let target ← getAsmIdent lbl

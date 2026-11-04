@@ -184,6 +184,13 @@ def Operation.toStr {w} (op : Operation w) (addr_w : Width := .W64) : String := 
       | some .e => "repe "
       | some .ne => "repne "
     s!"{pfx}cmps{sfx}"
+  | .scas rep =>
+    let sfx := match w with | .W8 => "b" | .W16 => "w" | .W32 => "d" | .W64 => "q"
+    let pfx := match rep with
+      | none => ""
+      | some .e => "repe "
+      | some .ne => "repne "
+    s!"{pfx}scas{sfx}"
   | .cld => "cld"
   | .std => "std"
   | .nop n => s!".nops {n}"
