@@ -1153,6 +1153,21 @@ def parseInstr : Parser Instr := do
     let target ← parseLabelRaw
     pure (toInstr (.some .W32) (w := .W64) (.jrcxz target))
 
+  | "loop" =>
+    skipHWs
+    let target ← parseLabelRaw
+    pure (toInstr .none (w := .W64) (.loop none target))
+
+  | "loope" | "loopz" =>
+    skipHWs
+    let target ← parseLabelRaw
+    pure (toInstr .none (w := .W64) (.loop (some .e) target))
+
+  | "loopne" | "loopnz" =>
+    skipHWs
+    let target ← parseLabelRaw
+    pure (toInstr .none (w := .W64) (.loop (some .ne) target))
+
   | _ =>
     if mn.startsWith "j" then
       let cc ← parseCondCode (mn.drop 1)

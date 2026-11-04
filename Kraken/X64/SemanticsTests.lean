@@ -77,3 +77,32 @@ private def wrapping : MachineData :=
   match Operation.interp (w := .W64) (address_size := .mk .W64) (.jrcxz "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt _ => Effects.done ⟨{}, tgt⟩) with
   | .done ⟨_, tgt⟩ => tgt == 0
   | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  let s : MachineData := ({} : MachineData).setReg (Reg.low .rcx .W64) 2
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.loop none "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt s' => Effects.done ⟨s', tgt⟩) with
+  | .done ⟨s', tgt⟩ => tgt == 42 && s'.regs.get (Reg.low .rcx .W64) == 1
+  | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  let s : MachineData := ({} : MachineData).setReg (Reg.low .rcx .W64) 1
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.loop none "target") ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩) (fun tgt _ => Effects.done ⟨{}, tgt⟩) with
+  | .done ⟨s', tgt⟩ => tgt == 0 && s'.regs.get (Reg.low .rcx .W64) == 0
+  | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  let s : MachineData := { ({} : MachineData).setReg (Reg.low .rcx .W64) 2 with status := { (default : StatusFlags) with zf := true } }
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.loop (some .e) "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt s' => Effects.done ⟨s', tgt⟩) with
+  | .done ⟨_, tgt⟩ => tgt == 42
+  | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  let s : MachineData := { ({} : MachineData).setReg (Reg.low .rcx .W64) 2 with status := { (default : StatusFlags) with zf := false } }
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.loop (some .e) "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt s' => Effects.done ⟨s', tgt⟩) with
+  | .done ⟨_, tgt⟩ => tgt == 0
+  | _ => false
+

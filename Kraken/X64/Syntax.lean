@@ -180,6 +180,9 @@ abbrev CondCode.ne := CondCode.nz
 abbrev CondCode.b := CondCode.c
 abbrev CondCode.ae := CondCode.nc
 
+inductive ZfCond | e | ne
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
+
 inductive ShiftCountExpr | cl | imm8 (v : ConstExpr)
   deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
@@ -232,6 +235,7 @@ inductive Operation (w : Width)
   -- Control flow
   | jcc (cc : CondCode) (target : Label)
   | jrcxz (target : Label)
+  | loop (cond : Option ZfCond) (target : Label)
   | jmp (target : RelRegOrMem)
   | call (target : RelRegOrMem)
   | ret

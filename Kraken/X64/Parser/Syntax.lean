@@ -411,6 +411,11 @@ syntax &"nop" : x64_instr
 syntax withPosition(&"nop" lineEq num) : x64_instr
 syntax withPosition(&"jrcxz" lineEq x64_ident) : x64_instr
 syntax withPosition(&"jecxz" lineEq x64_ident) : x64_instr
+syntax withPosition(&"loop" lineEq x64_ident) : x64_instr
+syntax withPosition(&"loope" lineEq x64_ident) : x64_instr
+syntax withPosition(&"loopz" lineEq x64_ident) : x64_instr
+syntax withPosition(&"loopne" lineEq x64_ident) : x64_instr
+syntax withPosition(&"loopnz" lineEq x64_ident) : x64_instr
 syntax withPosition(x64_jcc_op lineEq x64_ident) : x64_instr
 
 /-- X64 directive (label declaration, instruction, or Lean term antiquotation). -/

@@ -812,6 +812,17 @@ set_option maxHeartbeats 1000000
     if s.regs.get c == 0
     then jmp (label l) s
     else next s
+  | .loop cond l =>
+    let c := Reg.low .rcx address_size.address_size
+    let count := s.regs.get c - 1
+    let s := s.setReg c count
+    let zfMatches := match cond with
+      | none => true
+      | some .e => s.status.zf
+      | some .ne => !s.status.zf
+    if count != 0 && zfMatches
+    then jmp (label l) s
+    else next s
   | .jmp tgt =>
     tgt.interp s p (fun a s =>
     jmp (.ofBitVec a) s)

@@ -732,6 +732,15 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
   | `(x64_instr| jecxz $lbl:x64_ident) =>
     let target ← getAsmIdent lbl
     pure (toExpr (Instr.regular .W32 .W64 (.jrcxz target)))
+  | `(x64_instr| loop $lbl:x64_ident) =>
+    let target ← getAsmIdent lbl
+    mkClosedInstr (.loop none target)
+  | `(x64_instr| loope $lbl:x64_ident) | `(x64_instr| loopz $lbl:x64_ident) =>
+    let target ← getAsmIdent lbl
+    mkClosedInstr (.loop (some .e) target)
+  | `(x64_instr| loopne $lbl:x64_ident) | `(x64_instr| loopnz $lbl:x64_ident) =>
+    let target ← getAsmIdent lbl
+    mkClosedInstr (.loop (some .ne) target)
   | `(x64_instr| $op:x64_jcc_op $lbl:x64_ident) =>
     let cc ← evalCondCodeSuffix op
     let target ← getAsmIdent lbl
