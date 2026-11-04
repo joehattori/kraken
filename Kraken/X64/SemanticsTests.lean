@@ -64,3 +64,16 @@ private def wrapping : MachineData :=
   match Operation.interp (w := .W64) (address_size := .mk .W64) .cld ⟨0, 1⟩ { status := { (default : StatusFlags) with df := true } } (fun s => Effects.done ⟨s, 1⟩) (fun _ _ => Effects.done ⟨{}, 0⟩) with
   | .done ⟨s, _⟩ => s.status.df == false
   | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.jrcxz "target") ⟨0, 1⟩ {} (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt _ => Effects.done ⟨{}, tgt⟩) with
+  | .done ⟨_, tgt⟩ => tgt == 42
+  | _ => false
+
+#guard
+  let _ : Labels := { label _ := 42 }
+  let s : MachineData := ({} : MachineData).setReg (Reg.low .rcx .W64) 1
+  match Operation.interp (w := .W64) (address_size := .mk .W64) (.jrcxz "target") ⟨0, 1⟩ s (fun _ => Effects.done ⟨{}, 0⟩) (fun tgt _ => Effects.done ⟨{}, tgt⟩) with
+  | .done ⟨_, tgt⟩ => tgt == 0
+  | _ => false

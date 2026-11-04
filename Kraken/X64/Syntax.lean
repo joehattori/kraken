@@ -231,6 +231,7 @@ inductive Operation (w : Width)
   | bswap  (dst : Reg w) -- (_ : w = .W32 ∨ w = .W64)
   -- Control flow
   | jcc (cc : CondCode) (target : Label)
+  | jrcxz (target : Label)
   | jmp (target : RelRegOrMem)
   | call (target : RelRegOrMem)
   | ret
