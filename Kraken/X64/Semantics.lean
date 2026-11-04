@@ -277,7 +277,7 @@ structure StatusFlags where
   sf : Bool
   df : Bool
   of : Bool
-  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
+  deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr, Inhabited
 
 abbrev DataMem := Mem 64
 instance : Repr DataMem where reprPrec _ _ := "<opaque memory>"
@@ -818,6 +818,8 @@ set_option maxHeartbeats 1000000
     let rsp := s.regs.get64 .rsp
     s.load rsp .W64 (fun ra s =>
     jmp (.ofBitVec ra) { s with regs := s.regs.set64 .rsp (rsp + 8) })
+  | .cld => next { s with status := { s.status with df := false } }
+  | .std => next { s with status := { s.status with df := true } }
   | nop _ | nopalign _ _ => next s
 
 -- AVX Operations Interpreter

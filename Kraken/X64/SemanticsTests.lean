@@ -52,3 +52,15 @@ private def wrapping : MachineData :=
   some ([(0xfffffffffffffff8, UInt64.size), (0, 8)], [])
 #guard accessChecks (wrapping.storeAvx (w := .W128) 0xfffffffffffffff8 0 fun s => .done ⟨s, 0⟩) ==
   some ([], [(0xfffffffffffffff8, UInt64.size), (0, 8)])
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  match Operation.interp (w := .W64) (address_size := .mk .W64) .std ⟨0, 1⟩ {} (fun s => Effects.done ⟨s, 1⟩) (fun _ _ => Effects.done ⟨{}, 0⟩) with
+  | .done ⟨s, _⟩ => s.status.df == true
+  | _ => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  match Operation.interp (w := .W64) (address_size := .mk .W64) .cld ⟨0, 1⟩ { status := { (default : StatusFlags) with df := true } } (fun s => Effects.done ⟨s, 1⟩) (fun _ _ => Effects.done ⟨{}, 0⟩) with
+  | .done ⟨s, _⟩ => s.status.df == false
+  | _ => false
