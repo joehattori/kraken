@@ -103,7 +103,10 @@ instance : Gen AvxWidth := ⟨gen_ctors% AvxWidth⟩
 instance : Gen RegMm := ⟨gen_ctors% RegMm⟩
 instance : Gen Reg64 := ⟨gen_ctors% Reg64⟩
 instance : Gen CondCode := ⟨gen_ctors% CondCode⟩
+instance : Gen ZfCond := ⟨gen_ctors% ZfCond⟩
 instance : Gen AddrIndex := ⟨gen_ctors% AddrIndex⟩
+instance : Gen Bool := ⟨pick #[true, false]⟩
+instance {α} [Gen α] : Gen (Option α) := ⟨oneOf #[pure none, some <$> gen]⟩
 
 -- No nop lengths or alignments; other control flow is rejected by `stepDeterministic`.
 instance : Gen Nat := ⟨failure⟩

@@ -16,27 +16,29 @@ open Std.ExtHashMap
 
 namespace Kraken.X64.Art
 
+public section
+
 /-- ART `String.count_`: length << 1 | flag, flag 0 = compressed (1B/char), 1 = uncompressed (2B/char). -/
-def strByteLen (count : BitVec 32) : Nat :=
+@[expose] def strByteLen (count : BitVec 32) : Nat :=
   if count.getLsbD 0 then 2 * (count >>> 1).toNat else (count >>> 1).toNat
 
 /-- Zero-padded byte count in the string object (`kObjectAlignment = 8`). -/
-def padBytes (len : Nat) : Nat := (8 - (len % 8)) % 8
+@[expose] def padBytes (len : Nat) : Nat := (8 - (len % 8)) % 8
 
 /-- Total allocated data bytes of the string, including 8-byte zero-padding. -/
-def allocatedBytes (len : Nat) : Nat := len + padBytes len
+@[expose] def allocatedBytes (len : Nat) : Nat := len + padBytes len
 
 /--
 A valid ART String object in memory:
 - 32-bit `count_` field at `p + 8`
 - byte payload `data` followed by `padBytes data.length` zeroes at `p + 16`
 -/
-def StringAt (p : BitVec 64) (count : BitVec 32) (data : List UInt8) : Mem 64 → Prop :=
+@[expose] def StringAt (p : BitVec 64) (count : BitVec 32) (data : List UInt8) : Mem 64 → Prop :=
   Eq ((Int.toBytes 4 count.toInt).At (p + 8#64)) ⋆
   Eq ((data ++ List.replicate (padBytes data.length) (0 : UInt8)).At (p + 16#64))
 
 /-- Java `String.equals` specification: two strings are equal iff their count fields and byte payloads match. -/
-def stringEquals (s₁ s₂ : BitVec 64) (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8) : Bool :=
+@[expose] def stringEquals (s₁ s₂ : BitVec 64) (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8) : Bool :=
   s₁ == s₂ || (c₁ == c₂ && d₁ == d₂)
 
 /--
@@ -44,7 +46,7 @@ Memory condition for two string references `s₁` and `s₂`:
 either they point to the same object, or to two disjoint string objects in memory,
 framed by `R`.
 -/
-def StringsInMem (s₁ s₂ : BitVec 64) (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8)
+@[expose] def StringsInMem (s₁ s₂ : BitVec 64) (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8)
     (R : Mem 64 → Prop) (m : Mem 64) : Prop :=
   if s₁ = s₂ then
     c₁ = c₂ ∧ d₁ = d₂ ∧ (m =⋆ StringAt s₁ c₁ d₁ ⋆ R)
@@ -56,7 +58,7 @@ Specification postcondition: `t` is `{ s with ... }` where `dmem` is unchanged,
 `out` holds the boolean result, `n` and `off` hold scratch values, and `zmms` are
 either preserved (on early exit) or zero-uppered with `ymm` clobbered (after `vzeroupper`).
 -/
-def StringEqualsPost (str arg n off out : Reg64) (ymm : AvxReg .W256)
+@[expose] def StringEqualsPost (str arg n off out : Reg64) (ymm : AvxReg .W256)
     (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8) (s t : MachineData) : Prop :=
   let res : BitVec 64 := if stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂ then 1#64 else 0#64
   ∃ (vn voff : BitVec 64) (zmms : RegZmms) (flags : StatusFlags),
@@ -70,7 +72,7 @@ def StringEqualsPost (str arg n off out : Reg64) (ymm : AvxReg .W256)
 Parameterized assembly template for AVX2 String.equals.
 Uses vector register `ymm` and core registers `str`, `arg`, `n`, `off`, `out`.
 -/
-def stringEqualsProg (str arg n off out : Reg64) (ymm : AvxReg .W256) : _root_.Program := parse("
+@[expose] def stringEqualsProg (str arg n off out : Reg64) (ymm : AvxReg .W256) : _root_.Program := parse("
     # 1. Reference equality check: if str == arg return true
     cmpl %❰.low arg .W32❱, %❰.low str .W32❱
     je return_true
@@ -951,5 +953,7 @@ theorem stringEquals_correct [Host]
     cont
     exact len_done h_distinct h_ymm hlab H s _ _ _ _ hS rfl (by omega) _ (by frame_tac)
       (by simp only [get64_set64, ↓reduceIte, sw32_64, shr1 hbit])
+
+end
 
 end Kraken.X64.Art

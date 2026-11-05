@@ -3,4 +3,5 @@ module
 public import Kraken.X64.WP.Host
 public import Kraken.X64.WP.Basic
 public import Kraken.X64.WP.Loop
+public import Kraken.X64.WP.Rep
 public import Kraken.X64.WP.Triple
