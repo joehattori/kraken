@@ -250,63 +250,6 @@ theorem ofNat32_sub_sub {T m : Nat} (h0 : m + 1 ≤ T) :
     rw [BitVec.ofNat_add]
   rw [hT, BitVec.add_sub_cancel, BitVec.ofNat_add, BitVec.add_sub_cancel]
 
-theorem ofInt_eq_ofNat_of_lt {w : Nat} {x : Int} (h0 : 0 ≤ x) (hlt : x < (2 ^ w : Nat)) :
-    BitVec.ofInt w x = BitVec.ofNat w x.toNat := by
-  apply BitVec.eq_of_toNat_eq
-  simp only [BitVec.toNat_ofInt, BitVec.toNat_ofNat]
-  rw [Int.emod_eq_of_lt h0 (by omega)]
-  rw [Nat.mod_eq_of_lt (by omega)]
-
-theorem word_of_bytes (b0 b1 : UInt8) :
-    BitVec.ofInt 16 (Int.ofBytes [b0, b1]) =
-    b0.toBitVec.zeroExtend 16 ||| (b1.toBitVec.zeroExtend 16 <<< 8) := by
-  have hb0 : b0.toNat < 256 := by
-    change b0.toBitVec.toNat < 256
-    exact b0.toBitVec.isLt
-  have hb1 : b1.toNat < 256 := by
-    change b1.toBitVec.toNat < 256
-    exact b1.toBitVec.isLt
-  have h_int : Int.ofBytes [b0, b1] = (b1.toNat : Int) * 256 + b0.toNat := by
-    simp [Int.ofBytes]
-  rw [h_int]
-  have h_ofInt : (BitVec.ofInt 16 ((b1.toNat : Int) * 256 + b0.toNat) : BitVec 16) =
-      BitVec.ofNat 16 (b0.toNat + b1.toNat * 256) := by
-    have hlt : (b1.toNat : Int) * 256 + b0.toNat < (2 ^ 16 : Nat) := by
-      omega
-    rw [ofInt_eq_ofNat_of_lt (by omega) hlt]
-    congr 1
-    omega
-  rw [h_ofInt]
-  have h_add : BitVec.ofNat 16 (b0.toNat + b1.toNat * 256) =
-      BitVec.ofNat 16 b0.toNat + (BitVec.ofNat 16 b1.toNat <<< 8) := by
-    apply BitVec.eq_of_toNat_eq
-    simp only [BitVec.toNat_add, BitVec.toNat_shiftLeft, BitVec.toNat_ofNat, Nat.shiftLeft_eq]
-    have e1 : b1.toNat % 65536 = b1.toNat := Nat.mod_eq_of_lt (by omega)
-    have e2 : b1.toNat * 256 % 65536 = b1.toNat * 256 := Nat.mod_eq_of_lt (by omega)
-    have e0 : b0.toNat % 65536 = b0.toNat := Nat.mod_eq_of_lt (by omega)
-    have e3 : (b0.toNat + b1.toNat * 256) % 65536 = b0.toNat + b1.toNat * 256 := Nat.mod_eq_of_lt (by omega)
-    rw [e1, e2, e0, e3]
-  rw [h_add]
-  have h_e0 : BitVec.ofNat 16 b0.toNat = b0.toBitVec.zeroExtend 16 := by
-    apply BitVec.eq_of_toNat_eq
-    simp only [BitVec.toNat_ofNat, BitVec.toNat_setWidth]
-    rw [Nat.mod_eq_of_lt (by omega)]
-    rw [Nat.mod_eq_of_lt (by omega)]
-    rfl
-  have h_e1 : BitVec.ofNat 16 b1.toNat = b1.toBitVec.zeroExtend 16 := by
-    apply BitVec.eq_of_toNat_eq
-    simp only [BitVec.toNat_ofNat, BitVec.toNat_setWidth]
-    rw [Nat.mod_eq_of_lt (by omega)]
-    rw [Nat.mod_eq_of_lt (by omega)]
-    rfl
-  rw [h_e0, h_e1]
-  generalize b0.toBitVec = bv0
-  generalize b1.toBitVec = bv1
-  bv_decide
-
-theorem ofInt_ofBytes_one (b : UInt8) : BitVec.ofInt 8 (Int.ofBytes [b]) = b.toBitVec := by
-  simp [Int.ofBytes]
-
 theorem string_info_of {s : MachineData} {str : Reg64} {c : BitVec 32} {d : List UInt8}
     {R : Mem 64 → Prop} (hmem : (StringAt (s.regs.get64 str) c d ⋆ R) s.dmem)
     (hl : d.length = strByteLen c) :
