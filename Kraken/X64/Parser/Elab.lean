@@ -555,6 +555,20 @@ def elabShdOp (stx : TSyntax `x64_shd_op) : TermElabM Expr := withRef stx do
 -- ============================================================================
 
 
+/-- Elaborate the source of `vpbroadcast{b,w}`. Only its low lane is read, so the encoding names it as
+    an `%xmm` register; the AST stores it at the destination's width. An antiquotation is elaborated
+    at that width directly. -/
+def elabBroadcastSrc (stx : TSyntax `x64_avx_reg) : X64ElabM Expr := withRef stx do
+  match stx with
+  | `(x64_avx_reg| %❰ $t ❱) => elabAntiquot t (← mkAppWidth (mkConst ``AvxReg))
+  | _ =>
+    let ⟨_, reg⟩ ← evalAvxReg stx
+    let wExpr ← instantiateMVars (← getOperandWidth)
+    pure <| match [AvxWidth.W128, .W256, .W512].find? (toExpr · == wExpr) with
+      | some .W128 => toExpr (AvxReg.xmm reg.base)
+      | some .W256 => toExpr (AvxReg.ymm reg.base)
+      | _          => toExpr (AvxReg.zmm reg.base)
+
 /-- Elaborate an `x64_instr` syntax node into a `Lean.Expr` of type `Instr`. Each arm names the
     operation's constructor `mk` and records the mnemonic's width suffix before elaborating the operands,
     so that an operand disagreeing with the suffix is reported against the suffix. -/
@@ -664,6 +678,14 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
     mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vmovIn) #[toExpr n, dst, src])
   | `(x64_instr| vzeroupper) =>
     pure (toExpr (Instr.avx .W64 .W128 .vzeroupper))
+  | `(x64_instr| vpbroadcastb $src:x64_avx_reg, $dst:x64_avx_reg) =>
+    let dst ← elabAvxReg dst
+    let src ← elabBroadcastSrc src
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpbroadcastb) #[dst, src])
+  | `(x64_instr| vpbroadcastw $src:x64_avx_reg, $dst:x64_avx_reg) =>
+    let dst ← elabAvxReg dst
+    let src ← elabBroadcastSrc src
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpbroadcastw) #[dst, src])
   | `(x64_instr| vpcmpeqb $src2:x64_avx_operand, $src1:x64_avx_reg, $dst:x64_avx_reg) =>
     let src1 ← elabAvxReg src1
     let dst ← elabAvxReg dst

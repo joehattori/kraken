@@ -171,6 +171,8 @@ def avxOperation {w} (aw : Width) (op : AvxOperation w) : String :=
   | .vmovOut n d x => s!"{vmovName n} {avxReg x}, {rm aw d}"
   | .vmovq d x => s!"vmovq {avxReg x}, {avxReg d}"
   | .vzeroupper => "vzeroupper"
+  | .vpbroadcastb d s => s!"vpbroadcastb {avxReg s}, {avxReg d}"
+  | .vpbroadcastw d s => s!"vpbroadcastw {avxReg s}, {avxReg d}"
   | .vpcmpeqb d s1 s2 => s!"vpcmpeqb {avxRm aw s2}, {avxReg s1}, {avxReg d}"
   | .vpmovmskb d s => s!"vpmovmskb {avxReg s}, {rm aw d}"
 

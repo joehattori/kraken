@@ -605,6 +605,15 @@ info: [Directive.instr
 #check [x64| vpmovmskb %ymm0, %eax ]
 
 #check [x64| bsfl %eax, %ebx ]
+#check [x64| vpbroadcastb %xmm0, %ymm1 ]
+#check [x64| vpbroadcastw %xmm0, %ymm1 ]
+
+-- Test: an antiquoted broadcast source is taken at the destination's width
+/--
+info: [Directive.instr (avx Width.W64 AvxWidth.W256 (AvxOperation.vpbroadcastb v v))] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64| vpbroadcastb %❰v❱, %❰v❱ ]
 
 
 -- Test: a width that no operand or suffix determines is an error

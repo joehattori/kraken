@@ -44,13 +44,6 @@ namespace Reg
   | .ah | .bh | .ch | .dh => 8
 end Reg
 
-namespace AvxReg
-def base {w} (r : AvxReg w) : RegMm := match r with
-  | .xmm r => r
-  | .ymm r => r
-  | .zmm r => r
-end AvxReg
-
 structure Reg64s where
   rax : UInt64 := 0
   rbx : UInt64 := 0
@@ -246,6 +239,14 @@ def BitVec.blendWords {w : Nat} (a b : BitVec w) (imm : BitVec 8) : BitVec w :=
 def BitVec.pcmpeqb {w : Nat} (a b : BitVec w) : BitVec w :=
   BitVec.ofLanes w 8 fun i =>
     if a.lane 8 i == b.lane 8 i then 0xFF#8 else 0#8
+
+/-- Replicate the lowest byte of `a` across all bytes of the destination width `w`. -/
+def BitVec.broadcastb (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
+  BitVec.ofLanes w 8 fun _ => a.lane 8 0
+
+/-- Replicate the lowest 16-bit word of `a` across all words of the destination width `w`. -/
+def BitVec.broadcastw (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
+  BitVec.ofLanes w 16 fun _ => a.lane 16 0
 
 /-- Mask of MSBs of each byte in `v` (up to 32 bits, zero-extended). -/
 def BitVec.pmovmskb {w : Nat} (v : BitVec w) : BitVec 32 :=
@@ -987,6 +988,10 @@ match i with
   | .vmovOut n dst src => s.set dst ((s.zmms.get src).take n.bits) p next
   | .vmovq dst src => next (s.setAvxReg dst (((s.zmms.get src).take 64).zeroExtend _))
   | .vzeroupper => next { s with zmms := s.zmms.zeroUpper }
+  | .vpbroadcastb dst src =>
+    next (s.setAvxReg dst (BitVec.broadcastb w.bits (s.zmms.get src)))
+  | .vpbroadcastw dst src =>
+    next (s.setAvxReg dst (BitVec.broadcastw w.bits (s.zmms.get src)))
   | .vpcmpeqb dst src1 src2 =>
     src2.interp s p (fun b s =>
       next (s.setAvxReg dst (BitVec.pcmpeqb (s.zmms.get src1) b)))

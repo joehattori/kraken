@@ -83,6 +83,9 @@ inductive AvxReg : AvxWidth → Type
   | zmm (_ : RegMm) : AvxReg AvxWidth.W512
   deriving Repr, BEq, DecidableEq, Hashable, Lean.ToExpr
 
+def AvxReg.base {w : AvxWidth} : AvxReg w → RegMm
+  | .xmm r | .ymm r | .zmm r => r
+
 abbrev Label := String
 
 inductive ConstExpr
@@ -276,6 +279,8 @@ inductive AvxOperation (w : AvxWidth)
   | vmovq (_ : AvxReg w) (src : AvxReg w)
   | vzeroupper
   -- AVX/AVX2 packed compare and mask extraction
+  | vpbroadcastb (_ : AvxReg w) (src : AvxReg w)
+  | vpbroadcastw (_ : AvxReg w) (src : AvxReg w)
   | vpcmpeqb (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
   | vpmovmskb (dst : Dst .W32) (src : AvxReg w)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr

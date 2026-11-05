@@ -921,6 +921,24 @@ def parseInstr : Parser Instr := do
   | "vzeroupper" =>
     pure (toAvxInstr .none (w := .W128) .vzeroupper)
 
+  | "vpbroadcastb" => do
+    let ⟨ _w1, src ⟩ ← parseAvxRegW; parseComma
+    let ⟨ wd, dst ⟩ ← parseAvxRegW
+    let src' : AvxReg wd := match wd with
+      | .W128 => .xmm src.base
+      | .W256 => .ymm src.base
+      | .W512 => .zmm src.base
+    pure (toAvxInstr .none (.vpbroadcastb dst src'))
+
+  | "vpbroadcastw" => do
+    let ⟨ _w1, src ⟩ ← parseAvxRegW; parseComma
+    let ⟨ wd, dst ⟩ ← parseAvxRegW
+    let src' : AvxReg wd := match wd with
+      | .W128 => .xmm src.base
+      | .W256 => .ymm src.base
+      | .W512 => .zmm src.base
+    pure (toAvxInstr .none (.vpbroadcastw dst src'))
+
   | "vpcmpeqb" => do
     let (addr_w, src2) ← parseAvxRegOrMem; parseComma
     let ⟨ w1, src1 ⟩ ← parseAvxRegW; parseComma

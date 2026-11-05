@@ -241,5 +241,26 @@ private def bsfl (src : BitVec 32) (h : UInt64) : Option MachineData :=
       !s₀.status.pf && s₁.status.pf
   | _, _ => false
 
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := {}
+  let s := base.setAvxReg (.ymm .mm0) (0x42#256)
+  match runEffects (AvxOperation.interp (w := .W256) (address_size := .mk .W64) (.vpbroadcastb (.ymm .mm1) (.ymm .mm0)) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩)) with
+  | some s' =>
+    (s'.zmms.get (.ymm .mm1)).lane 8 0 == 0x42 &&
+    (s'.zmms.get (.ymm .mm1)).lane 8 31 == 0x42
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := {}
+  let s := base.setAvxReg (.ymm .mm0) (0x1234#256)
+  match runEffects (AvxOperation.interp (w := .W256) (address_size := .mk .W64) (.vpbroadcastw (.ymm .mm1) (.ymm .mm0)) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩)) with
+  | some s' =>
+    (s'.zmms.get (.ymm .mm1)).lane 16 0 == 0x1234 &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 15 == 0x1234
+  | none => false
+
+
 
 
