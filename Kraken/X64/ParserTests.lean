@@ -614,6 +614,7 @@ info: [Directive.instr (avx Width.W64 AvxWidth.W256 (AvxOperation.vpbroadcastb v
 -/
 #guard_msgs in
 #check [x64| vpbroadcastb %❰v❱, %❰v❱ ]
+#check [x64| vpcmpeqw %ymm1, %ymm0, %ymm0 ]
 
 
 -- Test: a width that no operand or suffix determines is an error

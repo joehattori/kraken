@@ -240,6 +240,11 @@ def BitVec.pcmpeqb {w : Nat} (a b : BitVec w) : BitVec w :=
   BitVec.ofLanes w 8 fun i =>
     if a.lane 8 i == b.lane 8 i then 0xFF#8 else 0#8
 
+/-- Word-wise equality comparison: 0xFFFF if equal, 0x0000 if not. -/
+def BitVec.pcmpeqw {w : Nat} (a b : BitVec w) : BitVec w :=
+  BitVec.ofLanes w 16 fun i =>
+    if a.lane 16 i == b.lane 16 i then 0xFFFF#16 else 0#16
+
 /-- Replicate the lowest byte of `a` across all bytes of the destination width `w`. -/
 def BitVec.broadcastb (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
   BitVec.ofLanes w 8 fun _ => a.lane 8 0
@@ -995,6 +1000,9 @@ match i with
   | .vpcmpeqb dst src1 src2 =>
     src2.interp s p (fun b s =>
       next (s.setAvxReg dst (BitVec.pcmpeqb (s.zmms.get src1) b)))
+  | .vpcmpeqw dst src1 src2 =>
+    src2.interp s p (fun b s =>
+      next (s.setAvxReg dst (BitVec.pcmpeqw (s.zmms.get src1) b)))
   | .vpmovmskb dst src =>
     s.set dst (BitVec.pmovmskb (s.zmms.get src)) p next
 

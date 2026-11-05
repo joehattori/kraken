@@ -225,6 +225,7 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .vpbroadcastb dst src => s!"vpbroadcastb {dst}, {src}"
   | .vpbroadcastw dst src => s!"vpbroadcastw {dst}, {src}"
   | .vpcmpeqb dst src1 src2 => s!"vpcmpeqb {dst}, {src1}, {src2.toStr addr_w}"
+  | .vpcmpeqw dst src1 src2 => s!"vpcmpeqw {dst}, {src1}, {src2.toStr addr_w}"
   | .vpmovmskb dst src => s!"vpmovmskb {dst.toStr addr_w}, {src}"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 

@@ -282,6 +282,7 @@ inductive AvxOperation (w : AvxWidth)
   | vpbroadcastb (_ : AvxReg w) (src : AvxReg w)
   | vpbroadcastw (_ : AvxReg w) (src : AvxReg w)
   | vpcmpeqb (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
+  | vpcmpeqw (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
   | vpmovmskb (dst : Dst .W32) (src : AvxReg w)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 

@@ -691,6 +691,11 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
     let dst ← elabAvxReg dst
     let src2 ← elabAvxRegOrMem src2
     mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpcmpeqb) #[dst, src1, src2])
+  | `(x64_instr| vpcmpeqw $src2:x64_avx_operand, $src1:x64_avx_reg, $dst:x64_avx_reg) =>
+    let src1 ← elabAvxReg src1
+    let dst ← elabAvxReg dst
+    let src2 ← elabAvxRegOrMem src2
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpcmpeqw) #[dst, src1, src2])
   | `(x64_instr| vpmovmskb $src:x64_avx_reg, $dst:x64_reg) =>
     let (dstReg, _) ← withOperandWidth (some .W32) (elabReg dst)
     let dst := mkApp2 (mkConst ``RegOrMem.reg) (toExpr Width.W32) dstReg

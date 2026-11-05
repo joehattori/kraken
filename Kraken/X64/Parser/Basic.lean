@@ -950,6 +950,17 @@ def parseInstr : Parser Instr := do
     else
       fail "vpcmpeqb destination and first source must have matching vector widths"
 
+  | "vpcmpeqw" => do
+    let (addr_w, src2) ← parseAvxRegOrMem; parseComma
+    let ⟨ w1, src1 ⟩ ← parseAvxRegW; parseComma
+    let ⟨ wd, dst ⟩ ← parseAvxRegW
+    if h1 : wd = w1 then
+      let src2 ← ascribeAvx wd src2
+      let src1 : AvxReg wd := h1 ▸ src1
+      pure (toAvxInstr addr_w (.vpcmpeqw dst src1 src2))
+    else
+      fail "vpcmpeqw destination and first source must have matching vector widths"
+
   | "vpmovmskb" => do
     let ⟨ _w, src ⟩ ← parseAvxRegW; parseComma
     let (addr_w, dst) ← parseRegOrMemAO .W32
