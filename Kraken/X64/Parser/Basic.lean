@@ -667,6 +667,13 @@ def parseInstr : Parser Instr := do
     let w ← instrWidth mn
     commaSeparated w parseRegOrMem parseRegA .adox
 
+  | "bsf" =>
+    commaSeparated .none parseRegOrMem parseRegA .bsf
+
+  | "bsfq" | "bsfl" =>
+    let w ← instrWidth mn
+    commaSeparated w parseRegOrMem parseRegA .bsf
+
   | "sub" =>
     commaSeparated .none parseOperand parseRegOrMem .sub
 

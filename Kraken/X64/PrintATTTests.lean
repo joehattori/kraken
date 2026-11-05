@@ -50,6 +50,7 @@ def corpus : List String := [
   "shrw $2, %ax", "sarl %cl, %eax", "shldq $4, %rax, %rbx", "shrd %cl, %ax, (%rsp)",
   "rolq $1, %rax", "rorb %cl, %al", "rclq $1, %rax", "rcrl %cl, (%rsp)",
   "bswap %eax", "bswapq %rax",
+  "bsfl %eax, %ebx", "bsfq %rax, %rbx",
   -- control flow
   "foo:\n  jmp foo", "je foo", "jne .L1", "jb foo", "jae foo", "ja foo", "jbe foo",
   "jl foo", "jle foo", "call foo", "call %rax", "jmp %rax",

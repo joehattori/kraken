@@ -252,6 +252,8 @@ declare_syntax_cat x64_rm_reg_op (behavior := both)
 syntax_affixed (suffixes := lq) "adcx" : x64_rm_reg_op
 /-- Unsigned integer addition with overflow flag (`OF`). -/
 syntax_affixed (suffixes := lq) "adox" : x64_rm_reg_op
+/-- Bit scan forward (`bsf*`) mnemonics taking `(src : RegOrMem, dst : Reg)`. -/
+syntax_affixed (suffixes := lq) "bsf" : x64_rm_reg_op
 
 /-- Conditional move (`cmov<cc>`) mnemonics taking `(src : RegOrMem, dst : Reg)`. -/
 declare_syntax_cat x64_cmov_op (behavior := both)

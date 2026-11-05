@@ -604,6 +604,9 @@ info: [Directive.instr
 #guard_msgs in
 #check [x64| vpmovmskb %ymm0, %eax ]
 
+#check [x64| bsfl %eax, %ebx ]
+
+
 -- Test: a width that no operand or suffix determines is an error
 /-- error: could not infer operand width -/
 #guard_msgs in

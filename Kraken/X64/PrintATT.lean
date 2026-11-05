@@ -112,6 +112,7 @@ def operation {w} (aw : Width) (op : Operation w) : String :=
   | .rcl d c => two "rcl" (count c) (rm aw d)
   | .rcr d c => two "rcr" (count c) (rm aw d)
   | .bswap d => s!"bswap {reg d}"
+  | .bsf d x => s!"bsf {rm aw x}, {reg d}"
   | .jcc cc l => s!"j{cc} {l}"
   | .jrcxz l => match aw with | .W32 => s!"jecxz {l}" | _ => s!"jrcxz {l}"
   | .loop none l => s!"loop {l}"

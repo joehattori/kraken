@@ -205,4 +205,41 @@ private def wrapping : MachineData :=
     s'.regs.get (Reg.low .rdi .W64) == 0x1020
   | none => false
 
+/-- Like `runEffects`, but resolves every `undefined` choice with `h` (all zeros or all ones for
+`h = 0` or `h = -1`), so a value that differs between the two is undefined. -/
+private partial def runEffectsWith (h : UInt64) : Effects → Option MachineData
+  | .done ⟨s, _⟩ => some s
+  | .require_read_access _ ok => runEffectsWith h (ok ())
+  | .require_write_access _ ok => runEffectsWith h (ok ())
+  | .require_exec_access _ ok => runEffectsWith h (ok ())
+  | @Effects.undefined _ t cont => runEffectsWith h (cont (t.from_hash h))
+  | _ => none
+
+/-- `bsfl %eax, %ecx` from a state with `%eax = src` and `%rcx = 42`. -/
+private def bsfl (src : BitVec 32) (h : UInt64) : Option MachineData :=
+  let _ : Labels := { label _ := 0 }
+  let s := ({} : MachineData).setReg (Reg.low .rax .W32) src |>.setReg (Reg.low .rcx .W64) 42
+  runEffectsWith h (Operation.interp (w := .W32) (address_size := .mk .W64)
+    (.bsf (.low .rcx .W32) (.reg (.low .rax .W32))) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩)
+    (fun _ _ => Effects.done ⟨{}, 1⟩))
+
+-- Nonzero source: the destination is the index of the lowest set bit, and ZF is clear.
+#guard [0, -1].all fun h => match bsfl 0x08 h with
+  | some s' => s'.status.zf == false && s'.regs.get64 .rcx == 3
+  | none => false
+
+-- Zero source: ZF is set, and the whole destination register is undefined.
+#guard match bsfl 0 0, bsfl 0 (-1) with
+  | some s₀, some s₁ => s₀.status.zf && s₁.status.zf &&
+      s₀.regs.get64 .rcx == 0 && s₁.regs.get64 .rcx == -1
+  | _, _ => false
+
+-- CF, OF, SF, AF, and PF are undefined.
+#guard match bsfl 0x08 0, bsfl 0x08 (-1) with
+  | some s₀, some s₁ => !s₀.status.cf && s₁.status.cf && !s₀.status.of && s₁.status.of &&
+      !s₀.status.sf && s₁.status.sf && !s₀.status.af && s₁.status.af &&
+      !s₀.status.pf && s₁.status.pf
+  | _, _ => false
+
+
 

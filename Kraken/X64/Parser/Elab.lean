@@ -482,6 +482,7 @@ def elabRmRegOp (stx : TSyntax `x64_rm_reg_op) : TermElabM Expr := withRef stx d
   match (← splitSuffixed stx).1 with
   | "adcx" => pure (mkConst ``Operation.adcx)
   | "adox" => pure (mkConst ``Operation.adox)
+  | "bsf" => pure (mkConst ``Operation.bsf)
   | stem   => throwError "invalid carry-chain mnemonic '{stem}'"
 
 /-- The `Operation` constructor of an `x64_unary_op`. -/

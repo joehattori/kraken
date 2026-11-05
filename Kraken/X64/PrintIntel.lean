@@ -165,6 +165,7 @@ def Operation.toStr {w} (op : Operation w) (addr_w : Width := .W64) : String := 
   | .rcl dst cnt => s!"rcl {dst.toStr addr_w}, {cnt}"
   | .rcr dst cnt => s!"rcr {dst.toStr addr_w}, {cnt}"
   | .bswap dst => s!"bswap {dst}"
+  | .bsf dst src => s!"bsf {dst}, {src.toStr addr_w}"
   | .jcc cc l => s!"j{cc} {l}"
   | .jrcxz l => match addr_w with | .W32 => s!"jecxz {l}" | _ => s!"jrcxz {l}"
   | .loop none l => s!"loop {l}"

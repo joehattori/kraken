@@ -252,6 +252,13 @@ def BitVec.pmovmskb {w : Nat} (v : BitVec w) : BitVec 32 :=
   (List.range (w / 8)).foldl (fun acc i =>
     if (v.lane 8 i).msb then acc ||| (1#32 <<< i) else acc) 0#32
 
+/-- Index of the least-significant 1-bit (0-indexed). If `x == 0`, returns 0; `bsf` leaves the
+    destination undefined in that case and does not use this value. -/
+def BitVec.bsf {w : Nat} (x : BitVec w) : BitVec w :=
+  match (List.range w).findSome? (fun i => if x.getLsbD i then some i else none) with
+  | some i => BitVec.ofNat w i
+  | none => 0#w
+
 def BitVec.toFloat32 (v : BitVec 32) : Float32 :=
   Float32.ofBits (UInt32.ofBitVec v)
 
@@ -809,6 +816,17 @@ set_option maxHeartbeats 1000000
             ++ a.extractLsb' 32 8 ++ a.extractLsb' 40 8 ++ a.extractLsb' 48 8 ++ a.drop 56
       next (s.setReg dst (v.setWidth _))
     | _ => undefined (fun v => next (s.setReg dst v))
+  | .bsf dst src =>
+    src.interp s p (fun a s =>
+    -- ZF is set iff the source is 0; CF, OF, SF, AF, and PF are undefined.
+    undefined (λ cf => undefined (λ pf => undefined (λ af => undefined (λ sf => undefined (λ of =>
+    let status := { cf, pf, af, zf := a == 0, sf, df := s.status.df, of }
+    if a == 0 then
+      -- The destination is undefined. Intel and AMD leave it unchanged, which for a 32-bit operand
+      -- keeps the upper half, so the whole 64-bit register is undefined.
+      @undefined _ (.bitvec .W64) (λ v => next { s with regs := s.regs.set64 dst.base v, status })
+    else
+      next { s.setReg dst a.bsf with status }))))))
   | .jcc cc l =>
     if cc.interp s.status
     then jmp (label l) s
