@@ -2100,13 +2100,14 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
         d.length = strByteLen c ∧
         s.status.df = false ∧
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
       (stringIndexOfRepProg slow len tmp)
     ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
           (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) 0#32 s₀;
       fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low Reg64.rax Width.W32)) s₀ pc s ⦄ := by
   rw [Program.triple_iff]
-  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, R, hmem⟩
+  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
   have h_prog_len : (stringIndexOfRepProg slow len tmp).length = 25 := rfl
@@ -2373,13 +2374,14 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
         d.length = strByteLen c ∧
         s.status.df = false ∧
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
       (stringIndexOfAfterRepProg slow len tmp start_idx)
     ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
           (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
       fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low Reg64.rax Width.W32)) s₀ pc s ⦄ := by
   rw [Program.triple_iff]
-  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, R, hmem⟩
+  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
   have h_prog_len : (stringIndexOfAfterRepProg slow len tmp start_idx).length = 37 := rfl
