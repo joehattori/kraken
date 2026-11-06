@@ -498,6 +498,27 @@ info: [Directive.label "aa.1.aa.1",
     jmp .L.str.1.llvm.12345
 ]
 
+-- Test: signed, sign, overflow, and parity condition codes
+/--
+info: [Directive.instr (regular Width.W64 Width.W64 (Operation.jcc CondCode.g "l")),
+  Directive.instr (regular Width.W64 Width.W64 (Operation.jcc CondCode.ge "l")),
+  Directive.instr (regular Width.W64 Width.W64 (Operation.jcc CondCode.s "l")),
+  Directive.instr (regular Width.W64 Width.W64 (Operation.jcc CondCode.no "l")),
+  Directive.instr (regular Width.W64 Width.W64 (Operation.jcc CondCode.p "l")),
+  Directive.instr
+    (regular Width.W64 Width.W32
+      (Operation.cmovcc CondCode.g (low Reg64.rax Width.W32) ↑(low Reg64.rbx Width.W32)))] : List _root_.Directive
+-/
+#guard_msgs in
+#check [x64|
+  jg l
+  jnl l
+  js l
+  jno l
+  jpe l
+  cmovg %ebx, %eax
+]
+
 end syntax_cat_and_include
 
 section antiquotations

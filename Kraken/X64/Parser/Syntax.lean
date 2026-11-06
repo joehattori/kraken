@@ -194,6 +194,18 @@ declare_affixes cc
   | /-- Condition: not greater or equal, signed (`SF ≠ OF`; alias of `l`). -/             "nge"
   | /-- Condition: less or equal, signed (`ZF = 1` or `SF ≠ OF`; alias of `ng`). -/       "le"
   | /-- Condition: not greater, signed (`ZF = 1` or `SF ≠ OF`; alias of `le`). -/         "ng"
+  | /-- Condition: greater or equal, signed (`SF = OF`; alias of `nl`). -/                "ge"
+  | /-- Condition: not less, signed (`SF = OF`; alias of `ge`). -/                        "nl"
+  | /-- Condition: greater, signed (`ZF = 0` and `SF = OF`; alias of `nle`). -/           "g"
+  | /-- Condition: not less or equal, signed (`ZF = 0` and `SF = OF`; alias of `g`). -/   "nle"
+  | /-- Condition: overflow (`OF = 1`). -/                                                "o"
+  | /-- Condition: not overflow (`OF = 0`). -/                                            "no"
+  | /-- Condition: sign (`SF = 1`). -/                                                    "s"
+  | /-- Condition: not sign (`SF = 0`). -/                                                "ns"
+  | /-- Condition: parity (`PF = 1`; alias of `pe`). -/                                   "p"
+  | /-- Condition: parity even (`PF = 1`; alias of `p`). -/                               "pe"
+  | /-- Condition: not parity (`PF = 0`; alias of `po`). -/                               "np"
+  | /-- Condition: parity odd (`PF = 0`; alias of `np`). -/                               "po"
 
 declare_affixes ext_z
   | /-- 8-bit (byte) source to 16-bit (word) destination. -/              "bw"
