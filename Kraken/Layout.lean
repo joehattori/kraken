@@ -1,6 +1,7 @@
 module
 
 public import Lean.ToExpr
+import Std.Tactic.BVDecide
 
 @[expose] public section
 
@@ -184,3 +185,8 @@ theorem Executable.withAddresses_dropWhile_addrOf {Instr : Type} (e : Executable
     simpa using hj
 
 end Kraken
+
+-- Pre-generate `enumToBitVec` helpers for core enum types once so downstream modules
+-- that invoke `bv_decide` do not emit conflicting definitions.
+private theorem punit_enumToBitVec_init (x y : PUnit) : x = y → x = y := by bv_decide
+private theorem ordering_enumToBitVec_init (x y : Ordering) : x = y → x = y := by bv_decide

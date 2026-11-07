@@ -4,6 +4,7 @@ import Kraken.Attribute
 public import Kraken.Layout
 public import Lean.ToExpr
 meta import Lean.Elab.Deriving.ToExpr
+import Std.Tactic.BVDecide
 
 @[expose] public section
 
@@ -390,3 +391,12 @@ namespace Reg
 @[match_pattern] abbrev r14b := low .r14 .W8
 @[match_pattern] abbrev r15b := low .r15 .W8
 end Reg
+
+-- Pre-generate `enumToBitVec` helpers once here so sibling downstream modules
+-- that invoke `bv_decide` on X64 enums do not emit conflicting definitions.
+private theorem width_enumToBitVec_init (x y : Width) : x = y → x = y := by bv_decide
+private theorem avxWidth_enumToBitVec_init (x y : AvxWidth) : x = y → x = y := by bv_decide
+private theorem regMm_enumToBitVec_init (x y : RegMm) : x = y → x = y := by bv_decide
+private theorem reg64_enumToBitVec_init (x y : Reg64) : x = y → x = y := by bv_decide
+private theorem condCode_enumToBitVec_init (x y : CondCode) : x = y → x = y := by bv_decide
+private theorem zfCond_enumToBitVec_init (x y : ZfCond) : x = y → x = y := by bv_decide
