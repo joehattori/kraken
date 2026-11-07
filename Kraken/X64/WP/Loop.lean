@@ -9,6 +9,10 @@ open Classical
 public def Program.IsLabelAddr [Host] (p : Program) (a : Int64) : Prop :=
   ∃ l ∈ p.labels, label l = a
 
+/-- Address `a` lies strictly outside the fragment `p` embedded via `H` and is not its end address. -/
+@[expose] public def Program.IsOutside [Host] (p : Program) (H : Embedding p) (a : Int64) : Prop :=
+  ¬(a = H.endAddr ∨ p.IsLabelAddr a ∨ (∃ i < p.length, a = Host.addrOf (H.start + i)))
+
 /--
 Run `p` inside embedding `H` until `pc = H.endAddr` (satisfying `Q`) or control leaves `p` (satisfying `E`).
 -/
@@ -130,5 +134,55 @@ public theorem Program.loop_of_interp {p : Program} {H : Embedding p} {Q : Machi
       refine (Directives.interp_inert_append hinert _ _ _ _).mpr ?_
       rw [hsucc] at h
       exact h
+
+/-- When `a` is outside `p`, `Program.LoopCont` reduces directly to the exit condition `E a s`. -/
+public theorem Program.loopCont_of_isOutside {p : Program} {H : Embedding p}
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop} {s : MachineData} {a : Int64}
+    (hout : p.IsOutside H a) (he : E a s) :
+    Program.LoopCont p H Q E ⟨s, a⟩ := by
+  unfold Program.LoopCont
+  split
+  · exact False.elim (hout ‹_›)
+  · exact he
+
+omit [Host] in
+private theorem loop_all_require_exec (span : Std.Rco Int64) (ok : Unit → Effects)
+    (post : MachineState → Prop) :
+    (Effects.require_exec_access span ok).All post = (ok ()).All post := rfl
+
+omit [Host] in
+private theorem loop_all_require_read (addr : BitVec 64) (bytes : UInt64)
+    (ok : Unit → Effects) (post : MachineState → Prop) :
+    (require_access require_read_access addr bytes ok).All post = (ok ()).All post := by
+  dsimp only [require_access]
+  split <;> rfl
+
+/--
+A `ret` whose top-of-stack return address `ra` lies outside `p` exits `Program.Loop` to
+`E ra` with `%rsp` incremented by `8`.
+-/
+public theorem Program.loop_ret_outside {p : Program} {H : Embedding p} {i : Nat}
+    {aw w : Width}
+    (hi : p[i]? = some (.instr (.regular aw w .ret)))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    {s : MachineData} {val : Int} {ra : Int64}
+    (hload : s.dmem.loadInt (s.regs.get64 .rsp) 8 = some val)
+    (hval : BitVec.ofInt 64 val = ra.toBitVec)
+    (hout : p.IsOutside H ra)
+    (hE : E ra { s with regs := s.regs.set64 .rsp (s.regs.get64 .rsp + 8#64) }) :
+    Program.Loop p H Q E ⟨s, Host.addrOf (H.start + i)⟩ := by
+  refine Program.loop_of_interp hi ?_
+  dsimp only [Directive.interp, Instr.interp, Operation.interp, MachineData.load]
+  rw [loop_all_require_exec, loop_all_require_read]
+  have h8 : Width.W64.bytes = 8 := rfl
+  rw [h8, hload]
+  dsimp only []
+  have hval' : BitVec.ofInt Width.W64.bits val = ra.toBitVec := hval
+  rw [hval']
+  have hof : Int64.ofBitVec ra.toBitVec = ra := rfl
+  rw [hof]
+  have h8bv : (8 : BitVec 64) = 8#64 := rfl
+  rw [h8bv]
+  exact Program.loopCont_of_isOutside hout hE
 
 end
