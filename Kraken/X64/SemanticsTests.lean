@@ -271,6 +271,48 @@ private def bsfl (src : BitVec 32) (h : UInt64) : Option MachineData :=
     (s'.zmms.get (.ymm .mm2)).lane 16 1 == 0xFFFF
   | none => false
 
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := {}
+  let s := (base.setAvxReg (.ymm .mm0) (0x0102030405060708_ffeeddccbbaa9980#128 |>.zeroExtend 256)).setAvxReg (.ymm .mm1) (BitVec.allOnes 256)
+  match runEffects (AvxOperation.interp (w := .W128) (address_size := .mk .W64) (.vpmovzxbw (.xmm .mm1) (.avx (.xmm .mm0))) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩)) with
+  | some s' =>
+    (s'.zmms.get (.ymm .mm1)).lane 16 0 == 0x0080 &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 1 == 0x0099 &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 7 == 0x00ff &&
+    (s'.zmms.get (.ymm .mm1)).drop 128 == 0
+  | none => false
+
+#guard
+  let _ : Labels := { label _ := 0 }
+  let base : MachineData := {}
+  let s := base.setAvxReg (.xmm .mm0) 0x807f0201_ffeeddcc_bbaa9988_77665544#128
+  match runEffects (AvxOperation.interp (w := .W256) (address_size := .mk .W64) (.vpmovzxbw (.ymm .mm1) (.avx (.xmm .mm0))) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩)) with
+  | some s' =>
+    (s'.zmms.get (.ymm .mm1)).lane 16 0 == 0x0044 &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 7 == 0x00bb &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 8 == 0x00cc &&
+    (s'.zmms.get (.ymm .mm1)).lane 16 15 == 0x0080
+  | none => false
+
+-- VPMOVZXBW xmm, m64 only reads 8 bytes (and VPMOVZXBW ymm, m128 reads 16 bytes).
+#guard
+  let _ : Labels := { label _ := 0 }
+  let addr := 0x1000#64
+  let mem8 := Mem.storeInt ({} : Mem 64) addr 8 0x8007060504030201
+  let s : MachineData := { ({} : MachineData) with
+    dmem := mem8
+    regs := ({} : Reg64s).set64 .rdi addr }
+  let r128 := runEffects (AvxOperation.interp (w := .W128) (address_size := .mk .W64)
+    (.vpmovzxbw (.xmm .mm0) (.mem ⟨some (.reg .rdi), none, .int64 0⟩)) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩))
+  let r256_fail := runEffects (AvxOperation.interp (w := .W256) (address_size := .mk .W64)
+    (.vpmovzxbw (.ymm .mm0) (.mem ⟨some (.reg .rdi), none, .int64 0⟩)) ⟨0, 1⟩ s (fun s' => Effects.done ⟨s', 0⟩))
+  match r128, r256_fail with
+  | some s', none =>
+    (s'.zmms.get (.xmm .mm0)).lane 16 0 == 0x0001 &&
+    (s'.zmms.get (.xmm .mm0)).lane 16 7 == 0x0080
+  | _, _ => false
+
 
 
 

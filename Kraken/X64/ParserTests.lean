@@ -615,6 +615,14 @@ info: [Directive.instr (avx Width.W64 AvxWidth.W256 (AvxOperation.vpbroadcastb v
 #guard_msgs in
 #check [x64| vpbroadcastb %❰v❱, %❰v❱ ]
 #check [x64| vpcmpeqw %ymm1, %ymm0, %ymm0 ]
+#check [x64| vpmovzxbw %xmm0, %xmm1 ]
+#check [x64| vpmovzxbw (%rdi), %xmm0 ]
+#check [x64| vpmovzxbw %xmm0, %ymm1 ]
+#check [x64| vpmovzxbw (%rdi), %ymm0 ]
+
+/-- error: type error: w128 != w256 -/
+#guard_msgs in
+#check [x64| vpmovzxbw %ymm0, %ymm1 ]
 
 
 -- Test: a width that no operand or suffix determines is an error

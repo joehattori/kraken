@@ -83,6 +83,13 @@ private def withOperandWidth' {α : Type} (w? : Option Width) (body : X64ElabM �
   let (res, {operandWidth, ..}) ← body.run {operandWidth := w}
   pure (res, operandWidth)
 
+/-- Run `body` with the instruction's operation width temporarily set to `w` (an `Expr` of type `AvxWidth`). -/
+private def withAvxOperandWidth {α : Type} (w : Expr) (body : X64ElabM α) : X64ElabM α := do
+  let saved ← getOperandWidth
+  modify ({ · with operandWidth := w })
+  try body
+  finally modify ({ · with operandWidth := saved })
+
 /-- Elaborate a memory operand: the widths its registers report make up the address width of the
     instruction, not its operation width. x86 instructions take at most one memory operand. -/
 def computingAddrWidth {α : Type} (body : X64ElabM α) : X64ElabM α := do
@@ -701,6 +708,16 @@ def elabInstr (stx : TSyntax `x64_instr) : X64ElabM Expr := withRef stx do
     let dst := mkApp2 (mkConst ``RegOrMem.reg) (toExpr Width.W32) dstReg
     let src ← elabAvxReg src
     mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpmovmskb) #[dst, src])
+  | `(x64_instr| vpmovzxbw $src:x64_avx_operand, $dst:x64_avx_reg) =>
+    let dst ← elabAvxReg dst
+    let wDst ← instantiateMVars (← getOperandWidth)
+    let wSrc ← match [AvxWidth.W128, .W256, .W512].find? (toExpr · == wDst) with
+      | some w => pure (toExpr w.half)
+      | none =>
+        if wDst.isMVar then throwError "could not infer destination vector width"
+        pure (mkApp (mkConst ``AvxWidth.half) wDst)
+    let src ← withAvxOperandWidth wSrc (elabAvxRegOrMem src)
+    mkAvxInstr (← mkAppWidth (mkConst ``AvxOperation.vpmovzxbw) #[dst, src])
   | `(x64_instr| $op:x64_shift_op $dst:x64_operand) =>
     let mk ← elabShiftOp op
     setSuffixWidth op

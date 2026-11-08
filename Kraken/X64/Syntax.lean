@@ -41,6 +41,7 @@ instance : ToString AvxWidth where
 namespace AvxWidth
 @[simp, reducible] def bits : AvxWidth → Nat | W128 => 128 | W256 => 256 | W512 => 512
 @[simp, reducible] def bytes : AvxWidth → Nat | W128 => 16 | W256 => 32 | W512 => 64
+@[simp, reducible] def half : AvxWidth → AvxWidth | W128 => W128 | W256 => W128 | W512 => W256
 abbrev bytesv (w : AvxWidth) {n} : BitVec n := BitVec.ofNat n w.bytes
 abbrev type (w : AvxWidth) : Type := BitVec w.bits
 instance {w : AvxWidth} : Coe Bool w.type where coe := fun b : Bool => BitVec.ofNat _ b.toNat
@@ -285,6 +286,7 @@ inductive AvxOperation (w : AvxWidth)
   | vpcmpeqb (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
   | vpcmpeqw (_ : AvxReg w) (src1 : AvxReg w) (src2 : AvxRegOrMem w)
   | vpmovmskb (dst : Dst .W32) (src : AvxReg w)
+  | vpmovzxbw (_ : AvxReg w) (src : AvxRegOrMem w.half)
   deriving Repr, DecidableEq, Hashable, Lean.ToExpr
 
 inductive Instr

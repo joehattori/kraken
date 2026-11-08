@@ -253,6 +253,10 @@ def BitVec.broadcastb (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
 def BitVec.broadcastw (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
   BitVec.ofLanes w 16 fun _ => a.lane 16 0
 
+/-- Zero-extend each low byte of `a` into a 16-bit word across width `w`. -/
+def BitVec.pmovzxbw (w : Nat) {w' : Nat} (a : BitVec w') : BitVec w :=
+  BitVec.ofLanes w 16 fun i => (a.lane 8 i).zeroExtend 16
+
 /-- Mask of MSBs of each byte in `v` (up to 32 bits, zero-extended). -/
 def BitVec.pmovmskb {w : Nat} (v : BitVec w) : BitVec 32 :=
   (List.range (w / 8)).foldl (fun acc i =>
@@ -1005,6 +1009,19 @@ match i with
       next (s.setAvxReg dst (BitVec.pcmpeqw (s.zmms.get src1) b)))
   | .vpmovmskb dst src =>
     s.set dst (BitVec.pmovmskb (s.zmms.get src)) p next
+  | .vpmovzxbw dst src =>
+    match src with
+    | .avx r =>
+      next (s.setAvxReg dst (BitVec.pmovzxbw w.bits (s.zmms.get r)))
+    | .mem a =>
+      let addr := (a.interp s.regs p).zeroExtend _
+      match w with
+      | .W128 =>
+        s.load addr .W64 (fun v s => next (s.setAvxReg dst (BitVec.pmovzxbw 128 v)))
+      | .W256 =>
+        s.loadAvx addr .W128 (fun v s => next (s.setAvxReg dst (BitVec.pmovzxbw 256 v)))
+      | .W512 =>
+        s.loadAvx addr .W256 (fun v s => next (s.setAvxReg dst (BitVec.pmovzxbw 512 v)))
 
 @[kstep]
 def Instr.interp [Labels]

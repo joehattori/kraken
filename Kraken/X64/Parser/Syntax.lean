@@ -398,6 +398,7 @@ syntax withPosition(&"vpbroadcastw" lineEq x64_avx_reg "," lineEq x64_avx_reg) :
 syntax withPosition(&"vpcmpeqb" lineEq x64_avx_operand "," lineEq x64_avx_reg "," lineEq x64_avx_reg) : x64_instr
 syntax withPosition(&"vpcmpeqw" lineEq x64_avx_operand "," lineEq x64_avx_reg "," lineEq x64_avx_reg) : x64_instr
 syntax withPosition(&"vpmovmskb" lineEq x64_avx_reg "," lineEq x64_reg) : x64_instr
+syntax withPosition(&"vpmovzxbw" lineEq x64_avx_operand "," lineEq x64_avx_reg) : x64_instr
 syntax withPosition(x64_shift_op lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shift_op lineEq x64_shift_count "," lineEq x64_operand) : x64_instr
 syntax withPosition(x64_shd_op lineEq x64_shift_count "," lineEq x64_reg "," lineEq x64_operand) : x64_instr

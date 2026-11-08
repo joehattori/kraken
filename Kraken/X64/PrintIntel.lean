@@ -227,6 +227,13 @@ def AvxOperation.toStr {w} (op : AvxOperation w) (addr_w : Width := .W64) : Stri
   | .vpcmpeqb dst src1 src2 => s!"vpcmpeqb {dst}, {src1}, {src2.toStr addr_w}"
   | .vpcmpeqw dst src1 src2 => s!"vpcmpeqw {dst}, {src1}, {src2.toStr addr_w}"
   | .vpmovmskb dst src => s!"vpmovmskb {dst.toStr addr_w}, {src}"
+  | .vpmovzxbw dst src =>
+    let srcStr := match src with
+      | .mem a => match w with
+        | .W128 => "QWORD PTR " ++ a.toStr addr_w
+        | _ => src.toStr addr_w
+      | _ => src.toStr addr_w
+    s!"vpmovzxbw {dst}, {srcStr}"
 instance {w} : ToString (Operation w) where toString op := op.toStr
 
 instance : ToString Instr where

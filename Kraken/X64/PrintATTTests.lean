@@ -66,7 +66,10 @@ def corpus : List String := [
   "vpcmpeqb %ymm1, %ymm0, %ymm0", "vpcmpeqb (%rsi), %ymm0, %ymm0",
   "vpbroadcastb %ymm0, %ymm1", "vpbroadcastw %ymm0, %ymm1",
   "vpcmpeqw %ymm1, %ymm0, %ymm0", "vpcmpeqw (%rsi), %ymm0, %ymm0",
-  "vpmovmskb %ymm0, %eax", "vpmovmskb %xmm0, %eax"
+  "vpmovmskb %ymm0, %eax", "vpmovmskb %xmm0, %eax",
+  "vpmovzxbw %xmm0, %xmm1", "vpmovzxbw (%rdi), %xmm0",
+  "vpmovzxbw %xmm0, %ymm1", "vpmovzxbw (%rdi), %ymm0",
+  "vpmovzxbw %ymm0, %zmm1", "vpmovzxbw (%rdi), %zmm0"
 ]
 
 /-- info: [] -/

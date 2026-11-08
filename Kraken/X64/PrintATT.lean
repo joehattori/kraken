@@ -176,6 +176,7 @@ def avxOperation {w} (aw : Width) (op : AvxOperation w) : String :=
   | .vpcmpeqb d s1 s2 => s!"vpcmpeqb {avxRm aw s2}, {avxReg s1}, {avxReg d}"
   | .vpcmpeqw d s1 s2 => s!"vpcmpeqw {avxRm aw s2}, {avxReg s1}, {avxReg d}"
   | .vpmovmskb d s => s!"vpmovmskb {avxReg s}, {rm aw d}"
+  | .vpmovzxbw d s => s!"vpmovzxbw {avxRm aw s}, {avxReg d}"
 
 def instr : Instr → String
   | .regular aw _ op => operation aw op

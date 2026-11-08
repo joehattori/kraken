@@ -966,6 +966,12 @@ def parseInstr : Parser Instr := do
     let (addr_w, dst) ← parseRegOrMemAO .W32
     pure (toAvxInstr addr_w (.vpmovmskb dst src))
 
+  | "vpmovzxbw" => do
+    let (addr_w, src) ← parseAvxRegOrMem; parseComma
+    let ⟨ wd, dst ⟩ ← parseAvxRegW
+    let src ← ascribeAvx wd.half src
+    pure (toAvxInstr addr_w (.vpmovzxbw dst src))
+
   -- Bitwise - 64-bit
   | "xor" =>
     commaSeparated .none parseOperand parseRegOrMem .xor
