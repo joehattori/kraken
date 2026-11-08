@@ -2,6 +2,7 @@ module
 
 public import Kraken.X64.WP
 public import Kraken.X64.WP.Loop
+import Kraken.X64.Parser
 public import Kraken.Layout
 public import Kraken.Mem
 import all Kraken.Mem
@@ -698,6 +699,88 @@ theorem word_of_bytes (b0 b1 : UInt8) :
 
 theorem ofInt_ofBytes_one (b : UInt8) : BitVec.ofInt 8 (Int.ofBytes [b]) = b.toBitVec := by
   simp [Int.ofBytes]
+
+/-- Slow-path-only `String.indexOf` lowering for constant `code_point > 0xFFFF`. -/
+@[expose] def stringIndexOfGtFFFFProg (slow : Label) : _root_.Program := parse("
+    jmp ❰.rel (.sub (.label slow) .after_current_instruction)❱
+")
+
+open Std.WP in
+theorem stringIndexOfGtFFFF_correct [Host] (slow : Label)
+    (out : Reg64) (temps : List Reg64)
+    (ymm1 ymm2 : AvxReg .W256)
+    (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
+    (s₀ : MachineData) :
+    ⦃ fun s => s = s₀ ∧ ch.toNat > 0xFFFF ⦄
+      (stringIndexOfGtFFFFProg slow)
+    ⦃ fun _ => StringIndexOfPost out temps ymm1 ymm2 chars ch fromIndex s₀;
+      fun pc s => StringIndexOfSlow slow ch s₀ pc s ⦄ := by
+  rw [Program.triple_iff]
+  rintro s ⟨rfl, h_ch⟩
+  unfold stringIndexOfGtFFFFProg
+  intro k hk
+  refine Host.eventually_of_interp hk ?_
+  simp [Directive.interp, Instr.interp, Operation.interp, RelRegOrMem.interp, ConstExpr.interp,
+    Effects.All, StringIndexOfSlow, h_ch]
+  exact Or.inr (by grind)
+
+/-- `cmpl $65535, ch; ja slow` takes the branch iff `65535 < ch.toNat`. -/
+theorem ja_65535_eq (ch : BitVec 32) :
+    (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
+      !(ch - 65535#32 == 0#32)) = decide (65535 < ch.toNat) := by
+  have h_eq : ch = BitVec.ofNat 32 ch.toNat := BitVec.eq_of_toNat_eq (by simp)
+  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) =
+      decide (ch.toNat < 65535) := by
+    conv => lhs; rw [h_eq]
+    exact Proof.cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
+  rw [h_cf]
+  by_cases h_lt : ch.toNat < 65535
+  · simp [h_lt, show ¬(65535 < ch.toNat) by omega]
+  · by_cases h_eq65535 : ch.toNat = 65535
+    · have hch_val : ch = 65535#32 := by rw [h_eq, h_eq65535]
+      rw [hch_val]; decide
+    · have h_gt : 65535 < ch.toNat := by omega
+      have h_ne0 : (ch - 65535#32 == 0#32) = false := by
+        rw [beq_eq_false_iff_ne]
+        intro h0
+        have := congrArg BitVec.toNat h0
+        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
+        omega
+      simp [h_lt, h_gt, h_ne0]
+
+/-- Lift a no-check `Program.wp` proof through the leading `cmpl $65535, search_value; ja slow` check. -/
+theorem wp_check_le_65535 [Host] (slow : Label) (search_value : Reg64) (body : _root_.Program)
+    (Q : MachineData → Prop) (s : MachineData)
+    (h_body : (s.regs.get (.low search_value .W32)).toNat ≤ 65535 →
+      ∀ st : StatusFlags, st.df = s.status.df →
+        Program.wp body Q (fun _ _ => False) { s with status := st }) :
+    Program.wp
+      (parse("
+        cmpl $65535, %❰.low search_value .W32❱
+        ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
+      ") ++ body)
+      Q (fun pc t => StringIndexOfSlow slow (s.regs.get (.low search_value .W32)) s pc t) s := by
+  change Program.wp (_ :: _ :: body) _ _ s
+  refine Program.wp_cons ?_
+  intro k0 hk0
+  refine Host.eventually_of_interp hk0 ?_
+  simp only [Directive.interp, Instr.interp, Operation.interp, Operand.interp,
+    RegOrMem.interp, ConstExpr.interp, StatusFlags.from_result, Effects.All,
+    Int64.toBitVec_ofNat, BitVec.truncate, Width.bits, BitVec.ofNat_eq_ofNat, BitVec.zero_eq,
+    (show BitVec.setWidth 32 65535#64 = 65535#32 from rfl)]
+  refine Or.inl ⟨rfl, ?_⟩
+  refine Program.wp_cons ?_
+  intro k1 hk1
+  refine Host.eventually_of_interp hk1 ?_
+  simp only [Directive.interp, Instr.interp, Operation.interp, CondCode.interp, Effects.All,
+    ja_65535_eq (s.regs.get (.low search_value .W32))]
+  by_cases h_ch : 65535 < (s.regs.get (.low search_value .W32)).toNat
+  · simp only [h_ch, decide_true, ↓reduceIte]
+    exact Or.inr ⟨rfl, h_ch, rfl, rfl, rfl⟩
+  · simp only [h_ch, decide_false, Bool.false_eq_true, ↓reduceIte]
+    refine Or.inl ⟨rfl, ?_⟩
+    exact Program.wp_mono (fun _ ht => ht) (fun _ _ hE => False.elim hE)
+      (h_body (Nat.not_lt.mp h_ch) _ rfl)
 
 end
 
