@@ -33,114 +33,128 @@ Fixed registers:
 - `string_length` = `len` (e.g. `%rdx`)
 - TMP = `tmp` (e.g. `%r11`)
 -/
-def stringIndexOfRepProg (slow : Label) (len tmp : Reg64) : _root_.Program := parse("
+@[expose] def stringIndexOfNoCheckRepProg (len tmp : Reg64) : _root_.Program := parse("
+    # 0. Load count_
+    movl 8(%rdi), %❰.low len .W32❱
+
+    testl %❰.low len .W32❱, %❰.low len .W32❱                # 1
+    je not_found                                            # 2
+
+    movl %❰.low len .W32❱, %❰.low tmp .W32❱                 # 3
+    shrl $1, %❰.low len .W32❱                               # 4
+
+    movl %❰.low len .W32❱, %ecx                             # 5
+    addq $16, %rdi                                          # 6
+
+    testl $1, %❰.low tmp .W32❱                              # 7
+    jne uncompressed                                        # 8
+
+    cmpl $127, %eax                                         # 9
+    jg not_found                                            # 10
+    repne scasb                                             # 11
+    jmp cmp_done                                            # 12
+
+  uncompressed:                                             # 13
+    repne scasw                                             # 14
+
+  cmp_done:                                                 # 15
+    jne not_found                                           # 16
+
+    subl %ecx, %❰.low len .W32❱                             # 17
+    # 18. leal -1(string_length), out
+    lea -1(%❰len❱), %edi
+    jmp done                                                # 19
+
+  not_found:                                                # 20
+    movl $-1, %edi                                          # 21
+
+  done:                                                     # 22
+")
+
+/--
+Checked assembly template for the baseline (non-AVX2) `String.indexOf(ch)` lowering in ART,
+using `repne scasb` / `repne scasw` (`start_at_zero = true`).
+-/
+@[expose] def stringIndexOfRepProg (slow : Label) (len tmp : Reg64) : _root_.Program :=
+  parse("
     # 0. Check code point > 0xFFFF:
     cmpl $65535, %eax
     ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
-
-    # 2. Load count_
-    movl 8(%rdi), %❰.low len .W32❱
-
-    testl %❰.low len .W32❱, %❰.low len .W32❱                # 3
-    je not_found                                            # 4
-
-    movl %❰.low len .W32❱, %❰.low tmp .W32❱                 # 5
-    shrl $1, %❰.low len .W32❱                               # 6
-
-    movl %❰.low len .W32❱, %ecx                             # 7
-    addq $16, %rdi                                          # 8
-
-    testl $1, %❰.low tmp .W32❱                              # 9
-    jne uncompressed                                        # 10
-
-    cmpl $127, %eax                                         # 11
-    jg not_found                                            # 12
-    repne scasb                                             # 13
-    jmp cmp_done                                            # 14
-
-  uncompressed:                                             # 15
-    repne scasw                                             # 16
-
-  cmp_done:                                                 # 17
-    jne not_found                                           # 18
-
-    subl %ecx, %❰.low len .W32❱                             # 19
-    # 20. leal -1(string_length), out
-    lea -1(%❰len❱), %edi
-    jmp done                                                # 21
-
-  not_found:                                                # 22
-    movl $-1, %edi                                          # 23
-
-  done:                                                     # 24
-")
+  ") ++ stringIndexOfNoCheckRepProg len tmp
 
 /--
 Parameterized assembly template for the baseline (non-AVX2) `String.indexOf(ch, fromIndex)` lowering in ART,
 using `repne scasb` / `repne scasw` (`start_at_zero = false`).
 -/
-def stringIndexOfAfterRepProg (slow : Label) (len tmp start_idx : Reg64) : _root_.Program := parse("
+@[expose] def stringIndexOfAfterNoCheckRepProg (len tmp start_idx : Reg64) : _root_.Program := parse("
+    # 0. Load count_
+    movl 8(%rdi), %❰.low len .W32❱
+
+    testl %❰.low len .W32❱, %❰.low len .W32❱                # 1
+    je not_found                                            # 2
+
+    movl %❰.low len .W32❱, %❰.low tmp .W32❱                 # 3
+    shrl $1, %❰.low len .W32❱                               # 4
+
+    cmpl %❰.low len .W32❱, %❰.low start_idx .W32❱           # 5
+    jge not_found                                           # 6
+
+    xorl %ecx, %ecx                                         # 7
+    cmpl $0, %❰.low start_idx .W32❱                         # 8
+    # 9. cmovg start_idx, counter (32-bit cmovg)
+    cmovg %❰.low start_idx .W32❱, %ecx
+
+    testl $1, %❰.low tmp .W32❱                              # 10
+    jne offset_uncompressed                                 # 11
+
+    # 12. leaq 16(%rdi, %rcx, 1), %rdi
+    lea 16(%rdi,%rcx,1), %rdi
+    jmp modify_counter                                      # 13
+
+  offset_uncompressed:                                      # 14
+    # 15. leaq 16(%rdi, %rcx, 2), %rdi
+    lea 16(%rdi,%rcx,2), %rdi
+
+  modify_counter:                                           # 16
+    negq %rcx                                               # 17
+    # 18. leaq (%len, %rcx, 1), %rcx
+    lea (%❰len❱,%rcx,1), %rcx
+
+    testl $1, %❰.low tmp .W32❱                              # 19
+    jne uncompressed                                        # 20
+
+    cmpl $127, %eax                                         # 21
+    jg not_found                                            # 22
+    repne scasb                                             # 23
+    jmp cmp_done                                            # 24
+
+  uncompressed:                                             # 25
+    repne scasw                                             # 26
+
+  cmp_done:                                                 # 27
+    jne not_found                                           # 28
+
+    subl %ecx, %❰.low len .W32❱                             # 29
+    # 30. leal -1(%len), %edi
+    lea -1(%❰len❱), %edi
+    jmp done                                                # 31
+
+  not_found:                                                # 32
+    movl $-1, %edi                                          # 33
+
+  done:                                                     # 34
+")
+
+/--
+Checked assembly template for the baseline (non-AVX2) `String.indexOf(ch, fromIndex)` lowering in ART,
+using `repne scasb` / `repne scasw` (`start_at_zero = false`).
+-/
+@[expose] def stringIndexOfAfterRepProg (slow : Label) (len tmp start_idx : Reg64) : _root_.Program :=
+  parse("
     # 0. Check code point > 0xFFFF:
     cmpl $65535, %eax
     ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
-
-    # 2. Load count_
-    movl 8(%rdi), %❰.low len .W32❱
-
-    testl %❰.low len .W32❱, %❰.low len .W32❱                # 3
-    je not_found                                            # 4
-
-    movl %❰.low len .W32❱, %❰.low tmp .W32❱                 # 5
-    shrl $1, %❰.low len .W32❱                               # 6
-
-    cmpl %❰.low len .W32❱, %❰.low start_idx .W32❱           # 7
-    jge not_found                                           # 8
-
-    xorl %ecx, %ecx                                         # 9
-    cmpl $0, %❰.low start_idx .W32❱                         # 10
-    # 11. cmovg start_idx, counter (32-bit cmovg)
-    cmovg %❰.low start_idx .W32❱, %ecx
-
-    testl $1, %❰.low tmp .W32❱                              # 12
-    jne offset_uncompressed                                 # 13
-
-    # 14. leaq 16(%rdi, %rcx, 1), %rdi
-    lea 16(%rdi,%rcx,1), %rdi
-    jmp modify_counter                                      # 15
-
-  offset_uncompressed:                                      # 16
-    # 17. leaq 16(%rdi, %rcx, 2), %rdi
-    lea 16(%rdi,%rcx,2), %rdi
-
-  modify_counter:                                           # 18
-    negq %rcx                                               # 19
-    # 20. leaq (%len, %rcx, 1), %rcx
-    lea (%❰len❱,%rcx,1), %rcx
-
-    testl $1, %❰.low tmp .W32❱                              # 21
-    jne uncompressed                                        # 22
-
-    cmpl $127, %eax                                         # 23
-    jg not_found                                            # 24
-    repne scasb                                             # 25
-    jmp cmp_done                                            # 26
-
-  uncompressed:                                             # 27
-    repne scasw                                             # 28
-
-  cmp_done:                                                 # 29
-    jne not_found                                           # 30
-
-    subl %ecx, %❰.low len .W32❱                             # 31
-    # 32. leal -1(%len), %edi
-    lea -1(%❰len❱), %edi
-    jmp done                                                # 33
-
-  not_found:                                                # 34
-    movl $-1, %edi                                          # 35
-
-  done:                                                     # 36
-")
+  ") ++ stringIndexOfAfterNoCheckRepProg len tmp start_idx
 
 theorem post_of (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
@@ -184,8 +198,8 @@ theorem post_of_after (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256)
 
 open Proof
 
-macro "cont_rep" : tactic => `(tactic| refine Program.loopCont_of_le (by simp [stringIndexOfRepProg]) ?_)
-macro "cont_after_rep" : tactic => `(tactic| refine Program.loopCont_of_le (by simp [stringIndexOfAfterRepProg]) ?_)
+macro "cont_rep" : tactic => `(tactic| refine Program.loopCont_of_le (by simp [stringIndexOfNoCheckRepProg]) ?_)
+macro "cont_after_rep" : tactic => `(tactic| refine Program.loopCont_of_le (by simp [stringIndexOfAfterNoCheckRepProg]) ?_)
 
 theorem ofNat64_succ_sub_one (m : Nat) : BitVec.ofNat 64 (m + 1) - 1#64 = BitVec.ofNat 64 m := by
   rw [BitVec.ofNat_add, BitVec.add_sub_cancel]
@@ -280,104 +294,18 @@ theorem string_info_of {s : MachineData} {str : Reg64} {c : BitVec 32} {d : List
     rw [this]
 
 
-theorem ret_slow [Host] (slow : Label) (len tmp : Reg64)
-    (ymm1 ymm2 : AvxReg .W256) (chars : List (BitVec 16)) (fromIndex : BitVec 32)
-    (H : Embedding (stringIndexOfRepProg slow len tmp)) (s t : MachineData)
-    (ch : BitVec 32) (h_ch : ch.toNat > 65535)
-    (h_rax : t.regs.get (Reg.low Reg64.rax Width.W32) = ch)
-    (h_regs : t.regs = s.regs)
-    (h_mem : t.dmem = s.dmem)
-    (h_zmms : t.zmms = s.zmms)
-    (hslow : IsSlowPathLabel (stringIndexOfRepProg slow len tmp) H slow) :
-    Program.Loop (stringIndexOfRepProg slow len tmp) H
-      (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 0)⟩ := by
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ch.isLt]
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) = false := by
-    conv => lhs; rw [h_eq]
-    have := cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-    rw [this]
-    simp only [decide_eq_false_iff_not]
-    omega
-  have h_zf : (ch - 65535#32 == 0#32) = false := by
-    rw [beq_eq_false_iff_ne]
-    intro h
-    have := congrArg BitVec.toNat h
-    simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-    omega
-  have h_cond : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !ch - 65535#32 == 0#32) = true := by
-    simp [h_cf, h_zf]
-  sstep; cont_rep; sstep
-  rw [get_low32] at h_rax
-  rw [h_rax, h_cond]
-  simp only [↓reduceIte]
-  change Program.LoopCont _ _ _ _ ⟨_, label slow⟩
-  unfold Program.LoopCont
-  by_cases h : label slow = H.endAddr ∨ (stringIndexOfRepProg slow len tmp).IsLabelAddr (label slow) ∨
-      (∃ i < (stringIndexOfRepProg slow len tmp).length, label slow = Host.addrOf (H.start + i))
-  · exact False.elim (hslow h)
-  · simp only [h, ↓reduceIte]
-    refine ⟨rfl, h_ch, h_regs, h_mem, h_zmms⟩
-
-theorem ret_slow_after [Host] (slow : Label) (len tmp start_idx : Reg64)
-    (ymm1 ymm2 : AvxReg .W256) (chars : List (BitVec 16)) (fromIndex : BitVec 32)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)) (s t : MachineData)
-    (ch : BitVec 32) (h_ch : ch.toNat > 65535)
-    (h_rax : t.regs.get (Reg.low Reg64.rax Width.W32) = ch)
-    (h_regs : t.regs = s.regs)
-    (h_mem : t.dmem = s.dmem)
-    (h_zmms : t.zmms = s.zmms)
-    (hslow : IsSlowPathLabel (stringIndexOfAfterRepProg slow len tmp start_idx) H slow) :
-    Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
-      (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 0)⟩ := by
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ch.isLt]
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) = false := by
-    conv => lhs; rw [h_eq]
-    have := cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-    rw [this]
-    simp only [decide_eq_false_iff_not]
-    omega
-  have h_zf : (ch - 65535#32 == 0#32) = false := by
-    rw [beq_eq_false_iff_ne]
-    intro h
-    have := congrArg BitVec.toNat h
-    simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-    omega
-  have h_cond : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !ch - 65535#32 == 0#32) = true := by
-    simp [h_cf, h_zf]
-  sstep; cont_after_rep; sstep
-  rw [get_low32] at h_rax
-  rw [h_rax, h_cond]
-  simp only [↓reduceIte]
-  change Program.LoopCont _ _ _ _ ⟨_, label slow⟩
-  unfold Program.LoopCont
-  by_cases h : label slow = H.endAddr ∨ (stringIndexOfAfterRepProg slow len tmp start_idx).IsLabelAddr (label slow) ∨
-      (∃ i < (stringIndexOfAfterRepProg slow len tmp start_idx).length, label slow = Host.addrOf (H.start + i))
-  · exact False.elim (hslow h)
-  · simp only [h, ↓reduceIte]
-    refine ⟨rfl, h_ch, h_regs, h_mem, h_zmms⟩
-
-theorem ret_not_found [Host] (slow : Label) (len tmp : Reg64)
+theorem ret_not_found [Host] (len tmp : Reg64)
     (ymm1 ymm2 : AvxReg .W256) (_hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp)) (s t : MachineData)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch : BitVec 32)
     (hspec : indexOfSpec chars ch 0#32 = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms) :
-    Program.Loop (stringIndexOfRepProg slow len tmp) H
+    Program.Loop (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 22)⟩ := by
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 20)⟩ := by
   sstep; cont_rep; sstep; cont_rep; sstep; cont_rep
   exact Program.loop_done (post_of len tmp ymm1 ymm2 chars ch 0#32 s _ (-1#32) hspec
     (by simp only [get_low32, set_low32, get64_set64]; rfl) hm (by
@@ -387,18 +315,18 @@ theorem ret_not_found [Host] (slow : Label) (len tmp : Reg64)
       · subst h1; simp at hr_out
       · simp [h1, hr r hr_out]) hz)
 
-theorem ret_not_found_after [Host] (slow : Label) (len tmp start_idx : Reg64)
+theorem ret_not_found_after [Host] (len tmp start_idx : Reg64)
     (ymm1 ymm2 : AvxReg .W256) (_hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)) (s t : MachineData)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms) :
-    Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.Loop (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 34)⟩ := by
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 32)⟩ := by
   sstep; cont_after_rep; sstep; cont_after_rep; sstep; cont_after_rep
   exact Program.loop_done (post_of_after len tmp start_idx ymm1 ymm2 chars ch fromIndex s _ (-1#32) hspec
     (by simp only [get_low32, set_low32, get64_set64]; rfl) hm (by
@@ -416,9 +344,9 @@ theorem subl_leal_eq (A B : BitVec 32) :
     A - B - 1#32 := by
   bv_decide
 
-theorem ret_found [Host] (slow : Label) (len tmp : Reg64)
+theorem ret_found [Host] (len tmp : Reg64)
     (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp)) (s t : MachineData)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch : BitVec 32)
     (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch 0#32 = match_idx)
@@ -426,12 +354,12 @@ theorem ret_found [Host] (slow : Label) (len tmp : Reg64)
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.Loop (stringIndexOfRepProg slow len tmp) H
+    Program.Loop (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 19)⟩ := by
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 17)⟩ := by
   sstep; cont_rep; sstep; cont_rep; sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 24) rfl]
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 22) rfl]
   cont_rep; sstep; cont_rep
   exact Program.loop_done (post_of len tmp ymm1 ymm2 chars ch 0#32 s _ match_idx hspec
     (by
@@ -447,8 +375,8 @@ theorem ret_found [Host] (slow : Label) (len tmp : Reg64)
         · subst h2; simp at hr_out
         · simp [h1, h2, hr r hr_out]) hz)
 
-theorem step_match_to_ret_found [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem step_match_to_ret_found [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s t : MachineData) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch 0#32 = match_idx)
@@ -457,24 +385,24 @@ theorem step_match_to_ret_found [Host] (slow : Label) (len tmp : Reg64) (hlab : 
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = true)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.LoopCont (stringIndexOfRepProg slow len tmp) H
+    Program.LoopCont (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 14)⟩ := by
-  refine Program.loopCont_of_le (j := 14) (by simp [stringIndexOfRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 12)⟩ := by
+  refine Program.loopCont_of_le (j := 12) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 17) rfl]
-  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfRepProg]) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 15) rfl]
+  refine Program.loopCont_of_le (j := 15) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 18) (by simp [stringIndexOfRepProg]) ?_
+  refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 19) (by simp [stringIndexOfRepProg]) ?_
-  exact ret_found slow len tmp ymm1 ymm2 hlab H s t chars ch match_idx hspec hm hr hz hlen
+  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfNoCheckRepProg]) ?_
+  exact ret_found len tmp ymm1 ymm2 hlab H s t chars ch match_idx hspec hm hr hz hlen
 
-theorem step_no_match_to_ret_not_found [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem step_no_match_to_ret_not_found [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s t : MachineData) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256)
     (hspec : indexOfSpec chars ch 0#32 = -1#32)
@@ -482,26 +410,26 @@ theorem step_no_match_to_ret_not_found [Host] (slow : Label) (len tmp : Reg64) (
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = false) :
-    Program.LoopCont (stringIndexOfRepProg slow len tmp) H
+    Program.LoopCont (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 14)⟩ := by
-  refine Program.loopCont_of_le (j := 14) (by simp [stringIndexOfRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 12)⟩ := by
+  refine Program.loopCont_of_le (j := 12) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 17) rfl]
-  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfRepProg]) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 15) rfl]
+  refine Program.loopCont_of_le (j := 15) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 18) (by simp [stringIndexOfRepProg]) ?_
+  refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 22) rfl]
-  refine Program.loopCont_of_le (j := 22) (by simp [stringIndexOfRepProg]) ?_
-  exact ret_not_found slow len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 20) rfl]
+  refine Program.loopCont_of_le (j := 20) (by simp [stringIndexOfNoCheckRepProg]) ?_
+  exact ret_not_found len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
 
-theorem ret_found_after [Host] (slow : Label) (len tmp start_idx : Reg64)
+theorem ret_found_after [Host] (len tmp start_idx : Reg64)
     (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)) (s t : MachineData)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = match_idx)
@@ -509,12 +437,12 @@ theorem ret_found_after [Host] (slow : Label) (len tmp start_idx : Reg64)
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.Loop (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 31)⟩ := by
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 29)⟩ := by
   sstep; cont_after_rep; sstep; cont_after_rep; sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 36) rfl]
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 34) rfl]
   cont_after_rep; sstep; cont_after_rep
   exact Program.loop_done (post_of_after len tmp start_idx ymm1 ymm2 chars ch fromIndex s _ match_idx hspec
     (by
@@ -530,8 +458,8 @@ theorem ret_found_after [Host] (slow : Label) (len tmp start_idx : Reg64)
         · subst h2; simp at hr_out
         · simp [h1, h2, hr r hr_out]) hz)
 
-theorem step_match_to_ret_found_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem step_match_to_ret_found_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s t : MachineData) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = match_idx)
@@ -540,24 +468,24 @@ theorem step_match_to_ret_found_after [Host] (slow : Label) (len tmp start_idx :
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = true)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.LoopCont (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.LoopCont (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 26)⟩ := by
-  refine Program.loopCont_of_le (j := 26) (by simp [stringIndexOfAfterRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 24)⟩ := by
+  refine Program.loopCont_of_le (j := 24) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 29) rfl]
-  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterRepProg]) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 27) rfl]
+  refine Program.loopCont_of_le (j := 27) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 30) (by simp [stringIndexOfAfterRepProg]) ?_
+  refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 31) (by simp [stringIndexOfAfterRepProg]) ?_
-  exact ret_found_after slow len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex match_idx hspec hm hr hz hlen
+  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
+  exact ret_found_after len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex match_idx hspec hm hr hz hlen
 
-theorem step_no_match_to_ret_not_found_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem step_no_match_to_ret_not_found_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s t : MachineData) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
@@ -565,25 +493,25 @@ theorem step_no_match_to_ret_not_found_after [Host] (slow : Label) (len tmp star
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = false) :
-    Program.LoopCont (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.LoopCont (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 26)⟩ := by
-  refine Program.loopCont_of_le (j := 26) (by simp [stringIndexOfAfterRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 24)⟩ := by
+  refine Program.loopCont_of_le (j := 24) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 29) rfl]
-  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterRepProg]) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 27) rfl]
+  refine Program.loopCont_of_le (j := 27) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 30) (by simp [stringIndexOfAfterRepProg]) ?_
+  refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 34) rfl]
-  refine Program.loopCont_of_le (j := 34) (by simp [stringIndexOfAfterRepProg]) ?_
-  exact ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 32) rfl]
+  refine Program.loopCont_of_le (j := 32) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
+  exact ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
 
-theorem step_from_cmp_done_match_to_ret_found [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem step_from_cmp_done_match_to_ret_found [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s t : MachineData) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch 0#32 = match_idx)
@@ -592,21 +520,21 @@ theorem step_from_cmp_done_match_to_ret_found [Host] (slow : Label) (len tmp : R
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = true)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.LoopCont (stringIndexOfRepProg slow len tmp) H
+    Program.LoopCont (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 17)⟩ := by
-  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 15)⟩ := by
+  refine Program.loopCont_of_le (j := 15) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 18) (by simp [stringIndexOfRepProg]) ?_
+  refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 19) (by simp [stringIndexOfRepProg]) ?_
-  exact ret_found slow len tmp ymm1 ymm2 hlab H s t chars ch match_idx hspec hm hr hz hlen
+  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfNoCheckRepProg]) ?_
+  exact ret_found len tmp ymm1 ymm2 hlab H s t chars ch match_idx hspec hm hr hz hlen
 
-theorem step_from_cmp_done_no_match_to_ret_not_found [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem step_from_cmp_done_no_match_to_ret_not_found [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s t : MachineData) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256)
     (hspec : indexOfSpec chars ch 0#32 = -1#32)
@@ -614,22 +542,22 @@ theorem step_from_cmp_done_no_match_to_ret_not_found [Host] (slow : Label) (len 
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = false) :
-    Program.LoopCont (stringIndexOfRepProg slow len tmp) H
+    Program.LoopCont (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 17)⟩ := by
-  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 15)⟩ := by
+  refine Program.loopCont_of_le (j := 15) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 18) (by simp [stringIndexOfRepProg]) ?_
+  refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 22) rfl]
-  refine Program.loopCont_of_le (j := 22) (by simp [stringIndexOfRepProg]) ?_
-  exact ret_not_found slow len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 20) rfl]
+  refine Program.loopCont_of_le (j := 20) (by simp [stringIndexOfNoCheckRepProg]) ?_
+  exact ret_not_found len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
 
-theorem scasw_zero [Host] (slow : Label) (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp)) (s t : MachineData)
+theorem scasw_zero [Host] (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch : BitVec 32)
     (hspec : indexOfSpec chars ch 0#32 = -1#32)
     (hm : t.dmem = s.dmem)
@@ -637,23 +565,23 @@ theorem scasw_zero [Host] (slow : Label) (len tmp : Reg64) (ymm1 ymm2 : AvxReg .
     (hz : t.zmms = s.zmms)
     (hzf : t.status.zf = false)
     (hrcx0 : t.regs.get64 .rcx = 0#64) :
-    Program.Loop (stringIndexOfRepProg slow len tmp) H
+    Program.Loop (stringIndexOfNoCheckRepProg len tmp) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 16)⟩ := by
-  refine Program.loop_repne_scasw_zero (i := 16) rfl hrcx0 ?_
-  refine Program.loopCont_of_le (j := 17) (by simp [stringIndexOfRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 14)⟩ := by
+  refine Program.loop_repne_scasw_zero (i := 14) rfl hrcx0 ?_
+  refine Program.loopCont_of_le (j := 15) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 18) (by simp [stringIndexOfRepProg]) ?_
+  refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfNoCheckRepProg]) ?_
   sstep
   rw [hzf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 22) rfl]
-  refine Program.loopCont_of_le (j := 22) (by simp [stringIndexOfRepProg]) ?_
-  exact ret_not_found slow len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 20) rfl]
+  refine Program.loopCont_of_le (j := 20) (by simp [stringIndexOfNoCheckRepProg]) ?_
+  exact ret_not_found len tmp ymm1 ymm2 hlab H s t chars ch hspec hm hr hz
 
-theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem scasw_loop [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s : MachineData) (A : BitVec 64) (T : Nat) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (d : List UInt8)
     (h_ch : ch.toNat ≤ 65535)
@@ -675,10 +603,10 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
       (hk : k + (m + 1) = T)
       (hpre : ∀ (i : Nat) (hi : i < k), (chars.get ⟨i, by omega⟩).zeroExtend 32 ≠ ch)
       (h_distinct : [Reg64.rdi, Reg64.rcx, len, tmp].Nodup),
-      Program.Loop (stringIndexOfRepProg slow len tmp) H
+      Program.Loop (stringIndexOfNoCheckRepProg len tmp) H
         (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 16)⟩ := by
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 14)⟩ := by
   induction m with
   | zero =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
@@ -727,7 +655,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           exact hpre i hi
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 17)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 15)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
@@ -773,7 +701,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 k := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_from_cmp_done_match_to_ret_found slow len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_from_cmp_done_match_to_ret_found len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 16 ≠ (d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8) := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W16) -
           BitVec.ofInt 16 (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) == 0#16) = false := by
@@ -792,7 +720,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         rw [h_val_rcx]; rfl
       rw [hzf_false, h_count_zero]
       simp only [Bool.not_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 17)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 15)⟩
       have hspec : indexOfSpec chars ch 0#32 = -1#32 := by
         have := indexOfSpec_eq_none (chars := chars) (ch := ch) (fromIndex := 0#32)
         simp only [show (if (0#32 : BitVec 32).slt 0 then 0 else (0#32 : BitVec 32).toNat) = 0 by decide] at this
@@ -817,7 +745,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         have h2 : r ≠ .rdi := by intro h; subst h; simp at hr_out
         simp only [h1, h2, ↓reduceIte]
         exact hr r hr_out
-      exact step_from_cmp_done_no_match_to_ret_not_found slow len tmp hlab H s _ chars ch ymm1 ymm2 hspec hm_mem hr_step hz rfl
+      exact step_from_cmp_done_no_match_to_ret_not_found len tmp hlab H s _ chars ch ymm1 ymm2 hspec hm_mem hr_step hz rfl
   | succ m' ih =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
@@ -866,7 +794,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           exact hpre i hi
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 17)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 15)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
@@ -912,7 +840,7 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 k := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_from_cmp_done_match_to_ret_found slow len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_from_cmp_done_match_to_ret_found len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 16 ≠ (d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8) := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W16) -
           BitVec.ofInt 16 (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) == 0#16) = false := by
@@ -938,8 +866,8 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         rw [h_val_rcx, hne_zero]
       rw [hzf_false, h_val_rcx_ne]
       simp only [Bool.not_false, Bool.true_and, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 16)⟩
-      refine Program.loopCont_of_le (j := 16) (by simp [stringIndexOfRepProg]) ?_
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 14)⟩
+      refine Program.loopCont_of_le (j := 14) (by simp [stringIndexOfNoCheckRepProg]) ?_
       have hrdi' : (((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
             ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).get64
@@ -981,8 +909,8 @@ theorem scasw_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or]
           refine ⟨⟨h_rdi_rcx, h_rdi_len, h_rdi_tmp⟩, ⟨h_rcx_len, h_rcx_tmp⟩, h_len_tmp, by decide⟩)
 
-theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfRepProg slow len tmp))
+theorem scasb_loop [Host] (len tmp : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckRepProg len tmp))
     (s : MachineData) (A : BitVec 64) (T : Nat) (chars : List (BitVec 16)) (ch : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (d : List UInt8)
     (h_ascii : ∀ c ∈ chars, c.toNat < 128)
@@ -1005,10 +933,10 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
       (hk : k + (m + 1) = T)
       (hpre : ∀ (i : Nat) (hi : i < k), (chars.get ⟨i, by omega⟩).zeroExtend 32 ≠ ch)
       (h_distinct : [Reg64.rdi, Reg64.rcx, len, tmp].Nodup),
-      Program.Loop (stringIndexOfRepProg slow len tmp) H
+      Program.Loop (stringIndexOfNoCheckRepProg len tmp) H
         (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch 0#32 s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 13)⟩ := by
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 11)⟩ := by
   induction m with
   | zero =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
@@ -1054,7 +982,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           exact hpre i hi
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 14)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 12)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
@@ -1100,7 +1028,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 k := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      refine step_match_to_ret_found slow len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
+      refine step_match_to_ret_found len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 8 ≠ (d.getD k 0).toBitVec := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W8) -
           BitVec.ofInt 8 (Int.ofBytes [byteAt s.dmem A k]) == 0#8) = false := by
@@ -1131,7 +1059,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         rw [h_val_rcx]; rfl
       rw [hzf_false, h_count_zero]
       simp only [Bool.not_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 14)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 12)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
@@ -1144,7 +1072,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         have h2 : r ≠ .rdi := by intro h; subst h; simp at hr_out
         simp only [h1, h2, ↓reduceIte]
         exact hr r hr_out
-      refine step_no_match_to_ret_not_found slow len tmp hlab H s _ chars ch ymm1 ymm2 hspec hm_mem hr_step hz rfl
+      refine step_no_match_to_ret_not_found len tmp hlab H s _ chars ch ymm1 ymm2 hspec hm_mem hr_step hz rfl
   | succ m' ih =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
@@ -1190,7 +1118,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           exact hpre i hi
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 14)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 12)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
@@ -1237,7 +1165,7 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 k := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      refine step_match_to_ret_found slow len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
+      refine step_match_to_ret_found len tmp hlab H s _ chars ch ymm1 ymm2 (.ofNat 32 k) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 8 ≠ (d.getD k 0).toBitVec := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W8) -
           BitVec.ofInt 8 (Int.ofBytes [byteAt s.dmem A k]) == 0#8) = false := by
@@ -1263,8 +1191,8 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
         rw [h_val_rcx, hne_zero]
       rw [hzf_false, h_val_rcx_ne]
       simp only [Bool.not_false, Bool.true_and, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 13)⟩
-      refine Program.loopCont_of_le (j := 13) (by simp [stringIndexOfRepProg]) ?_
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 11)⟩
+      refine Program.loopCont_of_le (j := 11) (by simp [stringIndexOfNoCheckRepProg]) ?_
       have hrdi' : (((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
             ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).get64
@@ -1306,8 +1234,8 @@ theorem scasb_loop [Host] (slow : Label) (len tmp : Reg64) (hlab : LabelsPlaced)
           simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or]
           refine ⟨⟨h_rdi_rcx, h_rdi_len, h_rdi_tmp⟩, ⟨h_rcx_len, h_rcx_tmp⟩, h_len_tmp, by decide⟩)
 
-theorem step_from_cmp_done_match_to_ret_found_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem step_from_cmp_done_match_to_ret_found_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s t : MachineData) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (match_idx : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = match_idx)
@@ -1316,21 +1244,21 @@ theorem step_from_cmp_done_match_to_ret_found_after [Host] (slow : Label) (len t
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = true)
     (hlen : t.regs.get (.low len .W32) - t.regs.get (.low .rcx .W32) - 1#32 = match_idx) :
-    Program.LoopCont (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.LoopCont (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 29)⟩ := by
-  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 27)⟩ := by
+  refine Program.loopCont_of_le (j := 27) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 30) (by simp [stringIndexOfAfterRepProg]) ?_
+  refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 31) (by simp [stringIndexOfAfterRepProg]) ?_
-  exact ret_found_after slow len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex match_idx hspec hm hr hz hlen
+  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
+  exact ret_found_after len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex match_idx hspec hm hr hz hlen
 
-theorem step_from_cmp_done_no_match_to_ret_not_found_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem step_from_cmp_done_no_match_to_ret_not_found_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s t : MachineData) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
@@ -1338,22 +1266,22 @@ theorem step_from_cmp_done_no_match_to_ret_not_found_after [Host] (slow : Label)
     (hr : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms)
     (h_zf : t.status.zf = false) :
-    Program.LoopCont (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.LoopCont (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 29)⟩ := by
-  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 27)⟩ := by
+  refine Program.loopCont_of_le (j := 27) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 30) (by simp [stringIndexOfAfterRepProg]) ?_
+  refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
   rw [h_zf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 34) rfl]
-  refine Program.loopCont_of_le (j := 34) (by simp [stringIndexOfAfterRepProg]) ?_
-  exact ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 32) rfl]
+  refine Program.loopCont_of_le (j := 32) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
+  exact ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
 
-theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem scasb_loop_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s : MachineData) (A : BitVec 64) (T start_val : Nat) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (d : List UInt8)
     (h_ascii : ∀ c ∈ chars, c.toNat < 128)
@@ -1380,10 +1308,10 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         have : (chars.drop start_val).length = T - start_val := by rw [List.length_drop, h_len]
         omega⟩).zeroExtend 32 ≠ ch)
       (h_distinct : [Reg64.rdi, Reg64.rcx, len, tmp].Nodup),
-      Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
+      Program.Loop (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
         (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 25)⟩ := by
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 23)⟩ := by
   induction m with
   | zero =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
@@ -1435,7 +1363,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_find]
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 26)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 24)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
@@ -1481,7 +1409,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 (start_val + k) := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_match_to_ret_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_match_to_ret_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 8 ≠ (d.getD (start_val + k) 0).toBitVec := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W8) -
           BitVec.ofInt 8 (Int.ofBytes [byteAt s.dmem A (start_val + k)]) == 0#8) = false := by
@@ -1506,7 +1434,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_val_rcx]; rfl
       rw [hzf_false, h_count_zero]
       simp only [Bool.not_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 26)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 24)⟩
       have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
         have := indexOfSpec_eq_none (chars := chars) (ch := ch) (fromIndex := fromIndex)
         rw [← h_start_val] at this
@@ -1530,7 +1458,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         have h2 : r ≠ .rdi := by intro h; subst h; simp at hr_out
         simp only [h1, h2, ↓reduceIte]
         exact hr r hr_out
-      exact step_no_match_to_ret_not_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 hspec hm_mem hr_step hz rfl
+      exact step_no_match_to_ret_not_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 hspec hm_mem hr_step hz rfl
   | succ m' ih =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
@@ -1582,7 +1510,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_find]
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 26)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 24)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
@@ -1628,7 +1556,7 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 (start_val + k) := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_match_to_ret_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_match_to_ret_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 8 ≠ (d.getD (start_val + k) 0).toBitVec := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W8) -
           BitVec.ofInt 8 (Int.ofBytes [byteAt s.dmem A (start_val + k)]) == 0#8) = false := by
@@ -1660,8 +1588,8 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_val_rcx, hne_zero]
       rw [hzf_false, h_val_rcx_ne]
       simp only [Bool.not_false, Bool.true_and, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 25)⟩
-      refine Program.loopCont_of_le (j := 25) (by simp [stringIndexOfAfterRepProg]) ?_
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 23)⟩
+      refine Program.loopCont_of_le (j := 23) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
       have hrdi' : (((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).set64
             Reg64.rcx
             ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 1#64)).get64
@@ -1707,8 +1635,8 @@ theorem scasb_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
 
 
 
-theorem scasw_after_zero [Host] (slow : Label) (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)) (s t : MachineData)
+theorem scasw_after_zero [Host] (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx)) (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
@@ -1716,23 +1644,23 @@ theorem scasw_after_zero [Host] (slow : Label) (len tmp start_idx : Reg64) (ymm1
     (hz : t.zmms = s.zmms)
     (hzf : t.status.zf = false)
     (hrcx0 : t.regs.get64 .rcx = 0#64) :
-    Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
+    Program.Loop (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
       (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 28)⟩ := by
-  refine Program.loop_repne_scasw_zero (i := 28) rfl hrcx0 ?_
-  refine Program.loopCont_of_le (j := 29) (by simp [stringIndexOfAfterRepProg]) ?_
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 26)⟩ := by
+  refine Program.loop_repne_scasw_zero (i := 26) rfl hrcx0 ?_
+  refine Program.loopCont_of_le (j := 27) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
-  refine Program.loopCont_of_le (j := 30) (by simp [stringIndexOfAfterRepProg]) ?_
+  refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
   sstep
   rw [hzf]
   simp only [Bool.not_false, ↓reduceIte]
-  simp only [addrOf_label hlab (H := H) (i := 34) rfl]
-  refine Program.loopCont_of_le (j := 34) (by simp [stringIndexOfAfterRepProg]) ?_
-  exact ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
+  simp only [addrOf_label hlab (H := H) (i := 32) rfl]
+  refine Program.loopCont_of_le (j := 32) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
+  exact ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s t chars ch fromIndex hspec hm hr hz
 
-theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx))
+theorem scasw_loop_after [Host] (len tmp start_idx : Reg64) (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckRepProg len tmp start_idx))
     (s : MachineData) (A : BitVec 64) (T start_val : Nat) (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (ymm1 ymm2 : AvxReg .W256) (d : List UInt8)
     (h_ch : ch.toNat ≤ 65535)
@@ -1758,10 +1686,10 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         have : (chars.drop start_val).length = T - start_val := by rw [List.length_drop, h_len]
         omega⟩).zeroExtend 32 ≠ ch)
       (h_distinct : [Reg64.rdi, Reg64.rcx, len, tmp].Nodup),
-      Program.Loop (stringIndexOfAfterRepProg slow len tmp start_idx) H
+      Program.Loop (stringIndexOfAfterNoCheckRepProg len tmp start_idx) H
         (StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 28)⟩ := by
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 26)⟩ := by
   induction m with
   | zero =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
@@ -1816,7 +1744,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_find]
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 29)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 27)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
@@ -1862,7 +1790,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 (start_val + k) := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_from_cmp_done_match_to_ret_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_from_cmp_done_match_to_ret_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 16 ≠ (d.getD (2 * (start_val + k)) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * (start_val + k) + 1) 0).toBitVec.zeroExtend 16 <<< 8) := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W16) -
           BitVec.ofInt 16 (Int.ofBytes [byteAt s.dmem A (2 * (start_val + k)), byteAt s.dmem A (2 * (start_val + k) + 1)]) == 0#16) = false := by
@@ -1887,7 +1815,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_val_rcx]; rfl
       rw [hzf_false, h_count_zero]
       simp only [Bool.not_false, Bool.false_and, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 29)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 27)⟩
       have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
         have := indexOfSpec_eq_none (chars := chars) (ch := ch) (fromIndex := fromIndex)
         rw [← h_start_val] at this
@@ -1911,7 +1839,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         have h2 : r ≠ .rdi := by intro h; subst h; simp at hr_out
         simp only [h1, h2, ↓reduceIte]
         exact hr r hr_out
-      exact step_from_cmp_done_no_match_to_ret_not_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 hspec hm_mem hr_step hz rfl
+      exact step_from_cmp_done_no_match_to_ret_not_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 hspec hm_mem hr_step hz rfl
   | succ m' ih =>
     intro k t hm_mem hr hz hdf hrcx hrdi hrax hlen_reg hk hpre hd
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
@@ -1966,7 +1894,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_find]
       rw [hzf_true]
       simp only [Bool.not_true, Bool.and_false, Bool.false_eq_true, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 29)⟩
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 27)⟩
       have hr_step : ∀ r, r ∉ [Reg64.rdi, Reg64.rcx, len, tmp] →
           ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
@@ -2012,7 +1940,7 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
                 Reg64.rcx -
               1#64)).get (.low .rcx .W32) - 1#32 = BitVec.ofNat 32 (start_val + k) := by
         rw [hlen_eval, hrcx_low, hlen_calc]
-      exact step_from_cmp_done_match_to_ret_found_after slow len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
+      exact step_from_cmp_done_match_to_ret_found_after len tmp start_idx hlab H s _ chars ch fromIndex ymm1 ymm2 (.ofNat 32 (start_val + k)) hspec hm_mem hr_step hz rfl hlen_step
     · have hne_symm : ch.setWidth 16 ≠ (d.getD (2 * (start_val + k)) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * (start_val + k) + 1) 0).toBitVec.zeroExtend 16 <<< 8) := Ne.symm heq
       have hzf_false : (t.regs.get (Reg.low Reg64.rax Width.W16) -
           BitVec.ofInt 16 (Int.ofBytes [byteAt s.dmem A (2 * (start_val + k)), byteAt s.dmem A (2 * (start_val + k) + 1)]) == 0#16) = false := by
@@ -2044,8 +1972,8 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
         rw [h_val_rcx, hne_zero]
       rw [hzf_false, h_val_rcx_ne]
       simp only [Bool.not_false, Bool.true_and, ↓reduceIte]
-      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 28)⟩
-      refine Program.loopCont_of_le (j := 28) (by simp [stringIndexOfAfterRepProg]) ?_
+      change Program.LoopCont _ _ _ _ ⟨_, Host.addrOf (H.start + 26)⟩
+      refine Program.loopCont_of_le (j := 26) (by simp [stringIndexOfAfterNoCheckRepProg]) ?_
       have hrdi' : (((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).set64
             Reg64.rcx
             ((t.regs.set (Reg.low Reg64.rdi Width.W64) (t.regs.get (Reg.low Reg64.rdi Width.W64) + 2#64)).get64
@@ -2090,27 +2018,27 @@ theorem scasw_loop_after [Host] (slow : Label) (len tmp start_idx : Reg64) (hlab
           refine ⟨⟨h_rdi_rcx, h_rdi_len, h_rdi_tmp⟩, ⟨h_rcx_len, h_rcx_tmp⟩, h_len_tmp, by decide⟩)
 
 
-theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256)
+theorem stringIndexOfNoCheckRep_correct [Host] (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [Reg64.rdi, Reg64.rax, Reg64.rcx, len, tmp].Nodup)
     (c : BitVec 32) (d : List UInt8)
     (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
-    (hslow : ∀ (H : Embedding (stringIndexOfRepProg slow len tmp)), IsSlowPathLabel (stringIndexOfRepProg slow len tmp) H slow)
     (s₀ : MachineData) :
     ⦃ fun s => s = s₀ ∧ (s.regs.get64 .rdi).toNat + 16 < 2 ^ 32 ∧
         d.length = strByteLen c ∧
         s.status.df = false ∧
+        (s.regs.get (Reg.low Reg64.rax Width.W32)).toNat ≤ 65535 ∧
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
         (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
-      (stringIndexOfRepProg slow len tmp)
+      (stringIndexOfNoCheckRepProg len tmp)
     ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
           (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) 0#32 s₀;
-      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low Reg64.rax Width.W32)) s₀ pc s ⦄ := by
+      fun _ _ => False ⦄ := by
   rw [Program.triple_iff]
-  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, h_uncomp_pos, R, hmem⟩
+  rintro s ⟨rfl, hA32, hl, hdf, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
-  have h_prog_len : (stringIndexOfRepProg slow len tmp).length = 25 := rfl
+  have h_prog_len : (stringIndexOfNoCheckRepProg len tmp).length = 23 := rfl
   change Program.Loop _ H _ _ ⟨s, Host.addrOf (H.start + 0)⟩
   let ch := BitVec.setWidth 32 (s.regs.get64 Reg64.rax)
   have hch_def : s.regs.get (Reg.low Reg64.rax Width.W32) = ch := by rw [get_low32]
@@ -2129,54 +2057,25 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
   have hd_rcx_rax : Reg64.rcx ≠ Reg64.rax := Ne.symm hd_rax_rcx
   have hd_len_rax : len ≠ Reg64.rax := Ne.symm hd_rax_len
   have hd_tmp_rax : tmp ≠ Reg64.rax := Ne.symm hd_rax_tmp
-  by_cases h_ch : ch.toNat > 65535
-  · have hch_gt : (s.regs.get (Reg.low Reg64.rax Width.W32)).toNat > 65535 := by
-      rw [hch_def]; exact h_ch
-    have hret := ret_slow slow len tmp ymm1 ymm2 (strChars c d) 0#32 H s s (s.regs.get (Reg.low Reg64.rax Width.W32)) hch_gt rfl rfl rfl rfl (hslow H)
-    exact hret
-  have h_ch_le : ch.toNat ≤ 65535 := by omega
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ch.isLt]
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) =
-      decide (ch.toNat < 65535) := by
-    conv => lhs; rw [h_eq]
-    exact cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-  have h_ja : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !(ch - 65535#32 == 0#32)) = false := by
-    by_cases h_lt : ch.toNat < 65535
-    · rw [h_cf, decide_eq_true_iff.mpr h_lt]
-      rfl
-    · have : ch.toNat = 65535 := by omega
-      have hch_val : ch = 65535#32 := by rw [h_eq, this]
-      rw [hch_val]
-      decide
-  -- Directive 0: cmp search_value, $0xFFFF
-  sstep
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  -- Directive 1: ja slow
-  sstep
-  rw [h_ja]
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
-  -- Directive 2: movl count, len
+  have h_ch_le : ch.toNat ≤ 65535 := by simpa [hch_def] using hch_le
+  -- Directive 0: movl count, len
   have cA := fun i (hi : i < 4) => sep_get_l hmem (stringAt_cnt (i := i) hi)
   sstep
   rw [load_count s.dmem (s.regs.get64 .rdi) c cA]
   simp only [cnt_val]
-  refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
-  -- Directive 3: testl len, len
+  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
+  -- Directive 1: testl len, len
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
-  -- Directive 4: jz not_found
+  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
+  -- Directive 2: jz not_found
   sstep
   have h_and_self : (c &&& c == 0#32) = (c == 0#32) := by simp [BitVec.and_self]
   rw [h_and_self]
   by_cases hc0 : c = 0#32
   · rw [hc0, beq_self_eq_true]
-    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 22) rfl]
-    refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
+    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 20) rfl]
+    refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
     have hd_nil : d = [] := by
       have : d.length = 0 := by rw [hl, hc0]; rfl
       exact List.eq_nil_of_length_eq_zero this
@@ -2184,55 +2083,55 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
       unfold strChars; rw [hd_nil]; rfl
     have hspec : indexOfSpec (strChars (0#32) d) (BitVec.setWidth 32 (s.regs.get64 Reg64.rax)) 0#32 = -1#32 := by
       rw [hchars_nil]; rfl
-    exact ret_not_found slow len tmp ymm1 ymm2 hlab H s _ (strChars (0#32) d) (BitVec.setWidth 32 (s.regs.get64 Reg64.rax)) hspec rfl (by
+    exact ret_not_found len tmp ymm1 ymm2 hlab H s _ (strChars (0#32) d) (BitVec.setWidth 32 (s.regs.get64 Reg64.rax)) hspec rfl (by
       intro r hr_out
       simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
       obtain ⟨hrdi_ne, hrcx_ne, hlen_ne, htmp_ne⟩ := hr_out
       simp only [get64_set64, hlen_ne, ↓reduceIte]) rfl
   · rw [beq_eq_false_iff_ne.mpr hc0]
     simp only [Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
-    -- Directive 5: movl len, tmp
+    refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
+    -- Directive 3: movl len, tmp
     sstep
-    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
-    -- Directive 6: shrl $1, len
+    refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
+    -- Directive 4: shrl $1, len
     sstep
     intro af
     simp only [↓reduceIte, beq_self_eq_true, Bool.false_eq_true]
+    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
+    -- Directive 5: movl len, %ecx
+    sstep
+    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
+    -- Directive 6: addq $16, str
+    sstep
     refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
-    -- Directive 7: movl len, %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
-    -- Directive 8: addq $16, str
-    sstep
-    refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
-    -- Directive 9: testl $1, tmp
+    -- Directive 7: testl $1, tmp
     sstep
     intro _
-    refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
-    -- Directive 10: jnz uncompressed
+    refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
+    -- Directive 8: jnz uncompressed
     sstep
     simp only [hd_tmp_rdi, hd_tmp_rcx, Ne.symm hd_len_tmp, ↓reduceIte, sw32_64, lsb_and1 c, Bool.not_not]
     by_cases h_comp : c.getLsbD 0 = false
     · -- COMPRESSED PATH
       rw [h_comp]
       simp only [Bool.not_false, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
-      -- Directive 11: cmpl $127, search_value
+      refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
+      -- Directive 9: cmpl $127, search_value
       sstep
       simp only [hd_rax_rdi, hd_rax_rcx, hd_rax_len, hd_rax_tmp, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
-      -- Directive 12: jg not_found
+      refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
+      -- Directive 10: jg not_found
       sstep
       by_cases h_ch127 : ch.toNat > 127
       · have h_jg := jg_ch127_true (ch := ch) h_ch127 h_ch_le
         rw [h_jg]
-        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 22) rfl]
-        refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
+        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 20) rfl]
+        refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
         have h_ascii' := strChars_compressed_ascii h_comp hl (h_ascii h_comp)
         have hspec : indexOfSpec (strChars c d) ch 0#32 = -1#32 := by
           exact indexOfSpec_compressed_gt127 h_ascii' h_ch127
-        exact ret_not_found slow len tmp ymm1 ymm2 hlab H s _ (strChars c d) ch hspec rfl (by
+        exact ret_not_found len tmp ymm1 ymm2 hlab H s _ (strChars c d) ch hspec rfl (by
           intro r hr_out
           simp only [get64_set64, set_low64, get_low64]
           have h1 : r ≠ .rdi := by intro h; subst h; simp at hr_out
@@ -2244,8 +2143,8 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
         have h_not_jg := jg_ch127_false (ch := ch) h_ch127_le
         rw [h_not_jg]
         simp only [Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
-        -- Directive 13: repne scasb!
+        refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
+        -- Directive 11: repne scasb!
         have hinfo := string_info_of hmem hl
         have h_len_eq : (strChars c d).length = (c >>> 1).toNat := strChars_length c d
         have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := by
@@ -2268,7 +2167,7 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
           exact hinfo.2 i hi
         have hch_eq : BitVec.setWidth 32 (s.regs.get64 Reg64.rax) = ch := rax_w32_eq s ch hch_def
         rw [hch_eq]
-        refine scasb_loop slow len tmp hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat
+        refine scasb_loop len tmp hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat
           (strChars c d) ch ymm1 ymm2 d h_ascii' h_ch127_le hT_lt hinfo1 hinfo2 (by
             intro i hi
             exact strChars_compressed_get h_comp i (by rw [← h_len_eq]; exact hi))
@@ -2298,12 +2197,12 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
         · contradiction
         · rfl
       rw [h_uncomp]
-      simp only [Bool.not_true, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 15) rfl]
-      refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
-      -- Directive 15: .label "uncompressed"
+      simp only [Bool.not_true, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 13) rfl]
+      refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
+      -- Directive 13: .label "uncompressed"
       sstep
-      refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
-      -- Directive 16: repne scasw!
+      refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
+      -- Directive 14: repne scasw!
       have hinfo := string_info_of hmem hl
       have h_len_eq : (strChars c d).length = (c >>> 1).toNat := strChars_length c d
       have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := shift_right_lt c
@@ -2313,7 +2212,7 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
             apply List.length_eq_zero_iff.mp
             rw [h_len_eq, hT0]
           rw [this, indexOfSpec_empty]
-        refine scasw_zero slow len tmp ymm1 ymm2 hlab H s _ (strChars c d) ch hspec rfl ?_ rfl ?_ ?_
+        refine scasw_zero len tmp ymm1 ymm2 hlab H s _ (strChars c d) ch hspec rfl ?_ rfl ?_ ?_
         · intro r hr_out
           have h1 : r ≠ .rdi := by intro h; subst h; simp at hr_out
           have h2 : r ≠ .rcx := by intro h; subst h; simp at hr_out
@@ -2328,7 +2227,7 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
         have hm1 : m + 1 = (c >>> 1).toNat := by omega
         have hch_eq : BitVec.setWidth 32 (s.regs.get64 Reg64.rax) = ch := rax_w32_eq s ch hch_def
         rw [hch_eq]
-        refine scasw_loop slow len tmp hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat
+        refine scasw_loop len tmp hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat
           (strChars c d) ch ymm1 ymm2 d h_ch_le hT_lt (by
             intro i hi
             have : strByteLen c = 2 * (c >>> 1).toNat := by
@@ -2364,11 +2263,12 @@ theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 y
           exact len_eval_eq c
 
 
-theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256)
-    (h_distinct : [Reg64.rdi, Reg64.rax, Reg64.rcx, len, tmp, start_idx].Nodup)
+/-- Correctness of the checked baseline (non-AVX2) `String.indexOf(ch)` lowering. -/
+theorem stringIndexOfRep_correct [Host] (slow : Label) (len tmp : Reg64) (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [Reg64.rdi, Reg64.rax, Reg64.rcx, len, tmp].Nodup)
     (c : BitVec 32) (d : List UInt8)
     (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
-    (hslow : ∀ (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)), IsSlowPathLabel (stringIndexOfAfterRepProg slow len tmp start_idx) H slow)
+    (hslow : ∀ (H : Embedding (stringIndexOfRepProg slow len tmp)), IsSlowPathLabel (stringIndexOfRepProg slow len tmp) H slow)
     (s₀ : MachineData) :
     ⦃ fun s => s = s₀ ∧ (s.regs.get64 .rdi).toNat + 16 < 2 ^ 32 ∧
         d.length = strByteLen c ∧
@@ -2376,15 +2276,42 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
         (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
-      (stringIndexOfAfterRepProg slow len tmp start_idx)
+      (stringIndexOfRepProg slow len tmp)
     ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
-          (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
+          (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) 0#32 s₀;
       fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low Reg64.rax Width.W32)) s₀ pc s ⦄ := by
+  have _ := hslow
   rw [Program.triple_iff]
   rintro s ⟨rfl, hA32, hl, hdf, h_ascii, h_uncomp_pos, R, hmem⟩
+  unfold stringIndexOfRepProg
+  refine wp_check_le_65535 slow .rax (stringIndexOfNoCheckRepProg len tmp) _ s
+    fun hch_le st hdf' => ?_
+  exact (Program.triple_iff.mp
+    (stringIndexOfNoCheckRep_correct len tmp ymm1 ymm2 h_distinct c d hlab { s with status := st }))
+    { s with status := st }
+    ⟨rfl, hA32, hl, hdf'.trans hdf, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
+
+theorem stringIndexOfAfterNoCheckRep_correct [Host] (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [Reg64.rdi, Reg64.rax, Reg64.rcx, len, tmp, start_idx].Nodup)
+    (c : BitVec 32) (d : List UInt8)
+    (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
+    (s₀ : MachineData) :
+    ⦃ fun s => s = s₀ ∧ (s.regs.get64 .rdi).toNat + 16 < 2 ^ 32 ∧
+        d.length = strByteLen c ∧
+        s.status.df = false ∧
+        (s.regs.get (Reg.low Reg64.rax Width.W32)).toNat ≤ 65535 ∧
+        (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
+        ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
+      (stringIndexOfAfterNoCheckRepProg len tmp start_idx)
+    ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
+          (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
+      fun _ _ => False ⦄ := by
+  rw [Program.triple_iff]
+  rintro s ⟨rfl, hA32, hl, hdf, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
-  have h_prog_len : (stringIndexOfAfterRepProg slow len tmp start_idx).length = 37 := rfl
+  have h_prog_len : (stringIndexOfAfterNoCheckRepProg len tmp start_idx).length = 35 := rfl
   change Program.Loop _ H _ _ ⟨s, Host.addrOf (H.start + 0)⟩
   let ch := BitVec.setWidth 32 (s.regs.get64 Reg64.rax)
   let fromIndex := BitVec.setWidth 32 (s.regs.get64 start_idx)
@@ -2431,52 +2358,25 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
   have hd_distinct4 : [Reg64.rdi, Reg64.rcx, len, tmp].Nodup := by
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or]
     refine ⟨⟨hd_rdi_rcx, hd_rdi_len, hd_rdi_tmp⟩, ⟨hd_rcx_len, hd_rcx_tmp⟩, hd_len_tmp, by decide⟩
-  by_cases h_ch : ch.toNat > 65535
-  · have hch_gt : ch.toNat > 65535 := h_ch
-    exact ret_slow_after slow len tmp start_idx ymm1 ymm2 (strChars c d) fromIndex H s s ch hch_gt hch_def rfl rfl rfl (hslow H)
-  have h_ch_le : ch.toNat ≤ 65535 := by omega
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) =
-      decide (ch.toNat < 65535) := by
-    conv => lhs; rw [h_eq]
-    exact cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-  have h_ja : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !(ch - 65535#32 == 0#32)) = false := by
-    by_cases h_lt : ch.toNat < 65535
-    · rw [h_cf, decide_eq_true_iff.mpr h_lt]
-      rfl
-    · have : ch.toNat = 65535 := by omega
-      have hch_val : ch = 65535#32 := by rw [h_eq, this]
-      rw [hch_val]
-      decide
-  -- Directive 0: cmp search_value, $0xFFFF
-  sstep
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  -- Directive 1: ja slow
-  sstep
-  rw [h_ja]
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
-  -- Directive 2: movl count, len
+  have h_ch_le : ch.toNat ≤ 65535 := by simpa [hch_def] using hch_le
+  -- Directive 0: movl count, len
   have cA := fun i (hi : i < 4) => sep_get_l hmem (stringAt_cnt (i := i) hi)
   sstep
   rw [load_count s.dmem (s.regs.get64 .rdi) c cA]
   simp only [cnt_val]
-  refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
-  -- Directive 3: testl len, len
+  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
+  -- Directive 1: testl len, len
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
-  -- Directive 4: jz not_found
+  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
+  -- Directive 2: jz not_found
   sstep
   have h_and_self : (c &&& c == 0#32) = (c == 0#32) := by simp [BitVec.and_self]
   rw [h_and_self]
   by_cases hc0 : c = 0#32
   · rw [hc0, beq_self_eq_true]
-    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 34) rfl]
-    refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
+    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 32) rfl]
+    refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
     have hd_nil : d = [] := by
       have : d.length = 0 := by rw [hl, hc0]; rfl
       exact List.eq_nil_of_length_eq_zero this
@@ -2484,7 +2384,7 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
       unfold strChars; rw [hd_nil]; rfl
     have hspec : indexOfSpec (strChars (0#32) d) ch fromIndex = -1#32 := by
       rw [hchars_nil, indexOfSpec_empty]
-    refine ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s _ (strChars (0#32) d) ch fromIndex hspec rfl ?_ rfl
+    refine ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s _ (strChars (0#32) d) ch fromIndex hspec rfl ?_ rfl
     · intro r hr_out
       simp only [get64_set64]
       by_cases h1 : r = len
@@ -2492,19 +2392,19 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
       · simp [h1]
   · rw [beq_eq_false_iff_ne.mpr hc0]
     simp only [Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
-    -- Directive 5: movl len, tmp
+    refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
+    -- Directive 3: movl len, tmp
     sstep
-    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
-    -- Directive 6: shrl $1, len
+    refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
+    -- Directive 4: shrl $1, len
     sstep
     intro af
     simp only [↓reduceIte, beq_self_eq_true]
-    refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
-    -- Directive 7: cmpl len, start_idx
+    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
+    -- Directive 5: cmpl len, start_idx
     sstep
-    refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
-    -- Directive 8: jge not_found
+    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
+    -- Directive 6: jge not_found
     sstep
     simp only [hd_start_len, hd_start_tmp, hd_len_tmp, ↓reduceIte]
     have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := shift_right_lt c
@@ -2520,8 +2420,8 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
     by_cases hge : v_ge = true
     · dsimp only [v_ge] at hge
       rw [hge]
-      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 34) rfl]
-      refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
+      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 32) rfl]
+      refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
       have hlen_eq : len_val = BitVec.ofNat 32 (c >>> 1).toNat := by
         dsimp [len_val]
         have : (c >>> 1).toNat < 2 ^ 32 := (c >>> 1).isLt
@@ -2537,7 +2437,7 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
         rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)] at hjge
         exact hjge
       have hspec : indexOfSpec (strChars c d) ch fromIndex = -1#32 := indexOfSpec_ge hge_spec
-      refine ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl ?_ rfl
+      refine ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl ?_ rfl
       · intro r hr_out
         simp only [get64_set64]
         by_cases h1 : r = len
@@ -2553,54 +2453,54 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
       dsimp only [v_ge] at hnot_ge
       rw [hnot_ge]
       simp only [Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
+      -- Directive 7: xorl %rcx, %rcx
+      sstep
+      intro _
+      refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
+      -- Directive 8: cmpl $0, start_idx
+      sstep
       refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
-      -- Directive 9: xorl %rcx, %rcx
+      -- Directive 9: cmovg start_idx, counter
       sstep
-      intro _
       refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
-      -- Directive 10: cmpl $0, start_idx
-      sstep
-      refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
-      -- Directive 11: cmovg start_idx, counter
-      sstep
-      refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
-      -- Directive 12: testl $1, tmp
+      -- Directive 10: testl $1, tmp
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
-      -- Directive 13: jnz offset_uncompressed
+      refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
+      -- Directive 11: jnz offset_uncompressed
       sstep
       simp only [hd_tmp_rdi, hd_tmp_rcx, hd_tmp_start, hd_tmp_len, Ne.symm hd_len_tmp, ↓reduceIte, lsb_and1 c, sw32_64, Bool.not_not]
       by_cases h_comp : c.getLsbD 0 = false
       · -- COMPRESSED PATH
         rw [h_comp]
         simp only [Bool.not_false, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
-        -- Directive 14: leaq 16(%rdi, %rcx, 1), %rdi
+        refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
+        -- Directive 12: leaq 16(%rdi, %rcx, 1), %rdi
         sstep
-        refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
-        -- Directive 15: jmp modify_counter
+        refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
+        -- Directive 13: jmp modify_counter
         sstep
-        simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 18) rfl]
+        simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 16) rfl]
+        refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
+        -- Directive 16: .label "modify_counter"
+        sstep
+        refine Program.loopCont_of_le (j := 17) (by rw [h_prog_len]; omega) ?_
+        -- Directive 17: negq %rcx
+        sstep
         refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
-        -- Directive 18: .label "modify_counter"
+        -- Directive 18: leaq (%len, %rcx, 1), %rcx
         sstep
         refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
-        -- Directive 19: negq %rcx
-        sstep
-        refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
-        -- Directive 20: leaq (%len, %rcx, 1), %rcx
-        sstep
-        refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
-        -- Directive 21: testl $1, tmp
+        -- Directive 19: testl $1, tmp
         sstep
         intro _
-        refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
-        -- Directive 22: jnz uncompressed
+        refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
+        -- Directive 20: jnz uncompressed
         sstep
         simp only [hd_tmp_rdi, hd_tmp_rcx, hd_tmp_len, hd_tmp_start, Ne.symm hd_len_tmp, ↓reduceIte, sw32_64, lsb_and1 c, h_comp, Bool.not_false, Bool.false_eq_true]
-        refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
-        -- Directive 23: cmpl $127, %rax
+        refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
+        -- Directive 21: cmpl $127, %rax
         sstep
         have : Reg64.rax ≠ Reg64.rdi := hd_rax_rdi
         have : Reg64.rax ≠ Reg64.rcx := hd_rax_rcx
@@ -2609,18 +2509,18 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
         have : Reg64.rax ≠ start_idx := hd_rax_start
         simp only [Reg64s.get, Reg.base, Reg.offset, get64_set64, set_low64, get_low64, this, hd_rax_rdi, hd_rax_rcx, hd_rax_len, hd_rax_tmp, hd_rax_start, ↓reduceIte]
         rw [rax_w32_eq s ch hch_def]
-        refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
-        -- Directive 24: jg not_found
+        refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
+        -- Directive 22: jg not_found
         sstep
         by_cases h_ch127 : ch.toNat > 127
         · have h_jg := jg_ch127_true (ch := ch) h_ch127 h_ch_le
           rw [h_jg]
-          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 34) rfl]
-          refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
+          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 32) rfl]
+          refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
           have h_ascii_c := strChars_compressed_ascii h_comp hl (h_ascii h_comp)
           have hspec : indexOfSpec (strChars c d) ch fromIndex = -1#32 := by
             exact indexOfSpec_compressed_gt127 h_ascii_c h_ch127
-          exact ret_not_found_after slow len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl (by
+          exact ret_not_found_after len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl (by
             intro r hr_out
             simp only [get64_set64, set_low64, get_low64]
             have h1 : r ≠ .rdi := by intro h; subst h; simp at hr_out
@@ -2632,8 +2532,8 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
           have h_not_jg := jg_ch127_false (ch := ch) h_ch127_le
           rw [h_not_jg]
           simp only [Bool.false_eq_true, ↓reduceIte]
-          refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
-          -- Directive 25: repne scasb!
+          refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
+          -- Directive 23: repne scasb!
           have hinfo := string_info_of hmem hl
           have h_len_eq : (strChars c d).length = (c >>> 1).toNat := strChars_length c d
           have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := shift_right_lt c
@@ -2657,7 +2557,7 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
           let m := (c >>> 1).toNat - start_val_nat - 1
           have hm1 : m + 1 = (c >>> 1).toNat - start_val_nat := by omega
           have h_ascii_c := strChars_compressed_ascii h_comp hl (h_ascii h_comp)
-          refine scasb_loop_after slow len tmp start_idx hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat start_val_nat
+          refine scasb_loop_after len tmp start_idx hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat start_val_nat
             (strChars c d) ch fromIndex ymm1 ymm2 d h_ascii_c h_ch127_le hT_lt rfl h_start_val_eq (by
               intro i hi
               have : strByteLen c = (c >>> 1).toNat := by
@@ -2750,35 +2650,35 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
           · contradiction
           · rfl
         rw [h_uncomp]
-        simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 16) rfl]
+        simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 14) rfl]
+        refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
+        -- Directive 14: offset_uncompressed
+        sstep
+        refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
+        -- Directive 15: leaq 16(%rdi, %rcx, 2), %rdi
+        sstep
         refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
-        -- Directive 16: offset_uncompressed
+        -- Directive 16: modify_counter
         sstep
         refine Program.loopCont_of_le (j := 17) (by rw [h_prog_len]; omega) ?_
-        -- Directive 17: leaq 16(%rdi, %rcx, 2), %rdi
+        -- Directive 17: negq %rcx
         sstep
         refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
-        -- Directive 18: modify_counter
+        -- Directive 18: leaq (%len, %rcx, 1), %rcx
         sstep
         refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
-        -- Directive 19: negq %rcx
-        sstep
-        refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
-        -- Directive 20: leaq (%len, %rcx, 1), %rcx
-        sstep
-        refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
-        -- Directive 21: testl $1, tmp
+        -- Directive 19: testl $1, tmp
         sstep
         intro _
-        refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
-        -- Directive 22: jnz uncompressed
+        refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
+        -- Directive 20: jnz uncompressed
         sstep
-        simp only [hd_tmp_rdi, hd_tmp_rcx, hd_tmp_start, hd_tmp_len, Ne.symm hd_len_tmp, ↓reduceIte, sw32_64, lsb_and1 c, h_uncomp, Bool.not_true, Bool.false_eq_true, addrOf_label hlab (H := H) (i := 27) rfl]
-        refine Program.loopCont_of_le (j := 27) (by rw [h_prog_len]; omega) ?_
-        -- Directive 27: .label "uncompressed"
+        simp only [hd_tmp_rdi, hd_tmp_rcx, hd_tmp_start, hd_tmp_len, Ne.symm hd_len_tmp, ↓reduceIte, sw32_64, lsb_and1 c, h_uncomp, Bool.not_true, Bool.false_eq_true, addrOf_label hlab (H := H) (i := 25) rfl]
+        refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
+        -- Directive 25: .label "uncompressed"
         sstep
-        refine Program.loopCont_of_le (j := 28) (by rw [h_prog_len]; omega) ?_
-        -- Directive 28: repne scasw
+        refine Program.loopCont_of_le (j := 26) (by rw [h_prog_len]; omega) ?_
+        -- Directive 26: repne scasw
         have hinfo := string_info_of hmem hl
         have h_len_eq : (strChars c d).length = (c >>> 1).toNat := strChars_length c d
         have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := shift_right_lt c
@@ -2788,7 +2688,7 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
             rw [strChars_length, hT0]
           have hspec : indexOfSpec (strChars c d) ch fromIndex = -1#32 := by
             rw [h_chars_nil, indexOfSpec_empty]
-          refine scasw_after_zero slow len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl ?_ rfl ?_ ?_
+          refine scasw_after_zero len tmp start_idx ymm1 ymm2 hlab H s _ (strChars c d) ch fromIndex hspec rfl ?_ rfl ?_ ?_
           · intro r hr_out
             have h1 : r ≠ .rdi := by intro h; subst h; simp at hr_out
             have h2 : r ≠ .rcx := by intro h; subst h; simp at hr_out
@@ -2849,7 +2749,7 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
           let start_val_nat := if fromIndex.slt 0 then 0 else fromIndex.toNat
           let m := (c >>> 1).toNat - start_val_nat - 1
           have hm1 : m + 1 = (c >>> 1).toNat - start_val_nat := by omega
-          refine scasw_loop_after slow len tmp start_idx hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat start_val_nat
+          refine scasw_loop_after len tmp start_idx hlab H s (s.regs.get64 .rdi) (c >>> 1).toNat start_val_nat
             (strChars c d) ch fromIndex ymm1 ymm2 d h_ch_le hT_lt rfl h_start_val_eq (by
               intro i hi
               have : strByteLen c = 2 * (c >>> 1).toNat := by
@@ -2938,6 +2838,34 @@ theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx :
             exact rax_w16_eq s ch hch_def
           · simp only [get_low32, get64_set64, hd_len_rdi, hd_len_rcx, ↓reduceIte]
             exact len_eval_simple c
+
+/-- Correctness of the checked baseline (non-AVX2) `String.indexOf(ch, fromIndex)` lowering. -/
+theorem stringIndexOfAfterRep_correct [Host] (slow : Label) (len tmp start_idx : Reg64) (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [Reg64.rdi, Reg64.rax, Reg64.rcx, len, tmp, start_idx].Nodup)
+    (c : BitVec 32) (d : List UInt8)
+    (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
+    (hslow : ∀ (H : Embedding (stringIndexOfAfterRepProg slow len tmp start_idx)), IsSlowPathLabel (stringIndexOfAfterRepProg slow len tmp start_idx) H slow)
+    (s₀ : MachineData) :
+    ⦃ fun s => s = s₀ ∧ (s.regs.get64 .rdi).toNat + 16 < 2 ^ 32 ∧
+        d.length = strByteLen c ∧
+        s.status.df = false ∧
+        (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
+        ∃ R, (StringAt (s.regs.get64 .rdi) c d ⋆ R) s.dmem ⦄
+      (stringIndexOfAfterRepProg slow len tmp start_idx)
+    ⦃ fun _ => StringIndexOfPost .rdi [.rcx, len, tmp] ymm1 ymm2
+          (strChars c d) (s₀.regs.get (Reg.low Reg64.rax Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
+      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low Reg64.rax Width.W32)) s₀ pc s ⦄ := by
+  have _ := hslow
+  rw [Program.triple_iff]
+  rintro s ⟨rfl, hA32, hl, hdf, h_ascii, h_uncomp_pos, R, hmem⟩
+  unfold stringIndexOfAfterRepProg
+  refine wp_check_le_65535 slow .rax (stringIndexOfAfterNoCheckRepProg len tmp start_idx) _ s
+    fun hch_le st hdf' => ?_
+  exact (Program.triple_iff.mp
+    (stringIndexOfAfterNoCheckRep_correct len tmp start_idx ymm1 ymm2 h_distinct c d hlab { s with status := st }))
+    { s with status := st }
+    ⟨rfl, hA32, hl, hdf'.trans hdf, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
 
 end
 
