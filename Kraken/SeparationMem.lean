@@ -129,4 +129,75 @@ theorem At_append_sep {w : Nat} (bs1 bs2 : List UInt8) (a : BitVec w)
     rw [← h_union]
     rw [← List.At_append _ _ _ h_len]
 
+theorem storeBytes_eq_of_sep {w : Nat} (bs : List UInt8) (a : BitVec w)
+    (R : Mem w → Prop) (m : Mem w)
+    (Hsep : m =⋆ Eq (bs.At a) ⋆ R) :
+    m.storeBytes a bs = m := by
+  have ⟨m1, m2, h_union, h_inter, hm1, _⟩ := Hsep
+  subst hm1
+  dsimp [storeBytes]
+  rw [← h_union, union_union_override (bs.At a) m2 (bs.At a) (fun _ h => h),
+    ← union_comm_of_disjoint (bs.At a) m2 h_inter]
+
+theorem storeBytes_overwrite {w : Nat} (m : Mem w) (a : BitVec w) (bs1 bs2 : List UInt8)
+    (h_len : bs1.length = bs2.length) :
+    (m.storeBytes a bs1).storeBytes a bs2 = m.storeBytes a bs2 := by
+  dsimp [storeBytes]
+  apply ExtHashMap.ext_getElem?
+  intro k
+  simp only [union_eq, getElem?_union]
+  cases h2 : (bs2.At a)[k]?
+  · have hn2 : ¬ k ∈ bs2.At a := fun hm => by
+      have := getElem?_eq_some_getElem hm; rw [h2] at this; contradiction
+    have hn1 : ¬ k ∈ bs1.At a := by
+      simpa [mem_At_iff, h_len] using hn2
+    rw [getElem?_eq_none hn1, Option.none_or]
+  · rfl
+
+theorem storeBytes_splice {w : Nat} (m : Mem w) (a : BitVec w)
+    (pre mid post new_mid : List UInt8)
+    (h_len_mid : new_mid.length = mid.length)
+    (h_bound : pre.length + mid.length + post.length ≤ 2 ^ w) :
+    (m.storeBytes a (pre ++ mid ++ post)).storeBytes
+      (a + BitVec.ofNat w pre.length) new_mid =
+      m.storeBytes a (pre ++ new_mid ++ post) := by
+  dsimp [storeBytes]
+  have hlen1 : pre.length + mid.length ≤ 2 ^ w := by omega
+  have hlen2 : (pre ++ mid).length + post.length ≤ 2 ^ w := by
+    simp only [List.length_append]; omega
+  have hlen2' : (pre ++ new_mid).length + post.length ≤ 2 ^ w := by
+    simp only [List.length_append, h_len_mid]; omega
+  rw [List.At_append (pre ++ mid) post a hlen2,
+      List.At_append pre mid a hlen1,
+      List.At_append (pre ++ new_mid) post a hlen2',
+      List.At_append pre new_mid a (by rw [h_len_mid]; exact hlen1)]
+  simp only [List.length_append, h_len_mid]
+  apply ExtHashMap.ext_getElem?
+  intro k
+  simp only [union_eq, getElem?_union]
+  cases hn : (new_mid.At (a + BitVec.ofNat w pre.length))[k]? with
+  | some b =>
+    have hmem_n : k ∈ new_mid.At (a + BitVec.ofNat w pre.length) :=
+      mem_iff_isSome_getElem?.mpr (by rw [hn]; rfl)
+    have hnot_post : ¬ k ∈ post.At (a + BitVec.ofNat w (pre.length + mid.length)) := by
+      intro hp
+      have hdisj := List.disjoint_At_append (pre ++ new_mid) post a hlen2'
+      rw [List.At_append pre new_mid a (by rw [h_len_mid]; exact hlen1),
+        List.length_append, h_len_mid] at hdisj
+      have hkey : k ∈ ((pre.At a).union (new_mid.At (a + BitVec.ofNat w pre.length))).inter
+          (post.At (a + BitVec.ofNat w (pre.length + mid.length))) := by
+        rw [inter_eq, mem_inter_iff]
+        refine ⟨mem_iff_isSome_getElem?.mpr ?_, hp⟩
+        simp [union_eq, getElem?_union, hn]
+      rw [hdisj] at hkey
+      exact absurd hkey not_mem_empty
+    rw [getElem?_eq_none hnot_post]
+    simp only [Option.none_or, Option.some_or]
+  | none =>
+    have hnot_n : ¬ k ∈ new_mid.At (a + BitVec.ofNat w pre.length) := fun hm => by
+      have := getElem?_eq_some_getElem hm; rw [hn] at this; contradiction
+    have hnot_m : ¬ k ∈ mid.At (a + BitVec.ofNat w pre.length) := by
+      simpa [mem_At_iff, h_len_mid] using hnot_n
+    rw [getElem?_eq_none hnot_m, Option.none_or, Option.none_or]
+
 end Mem

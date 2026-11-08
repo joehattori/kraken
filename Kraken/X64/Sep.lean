@@ -32,3 +32,27 @@ theorem load_sep (s : MachineData) (addr : BitVec 64) (w : Width) (ret : w.type 
       require_access require_read_access addr (UInt64.ofNat w.bytes) (fun _ => ret (.ofInt w.bits (Int.ofBytes bs)) s) := by
   simp only [MachineData.load,
     Mem.loadInt_sep bs addr w.bytes R s.dmem h_mem h_len (by cases w <;> decide)]
+
+@[kspec]
+theorem storeAvx_sep (s : MachineData) (addr : BitVec 64) (w : AvxWidth) (v : w.type)
+    (ret : MachineData → Effects) (bs : List UInt8) (R : DataMem → Prop)
+    (h_mem : s.dmem =⋆ Eq (bs.At addr) ⋆ R)
+    (h_len : bs.length = w.bytes) :
+    have mem' := Mem.storeInt s.dmem addr w.bytes v.toInt
+    MachineData.storeAvx s addr v ret =
+      require_access require_write_access addr (UInt64.ofNat w.bytes) (fun _ =>
+        ret { s with dmem := mem' }) := by
+  have h_load : Mem.loadInt s.dmem addr w.bytes = some (Int.ofBytes bs) :=
+    Mem.loadInt_sep bs addr w.bytes R s.dmem h_mem h_len (by cases w <;> decide)
+  simp only [MachineData.storeAvx, Bool.false_and, Bool.false_eq_true, ↓reduceIte, h_load]
+
+@[kspec]
+theorem loadAvx_sep (s : MachineData) (addr : BitVec 64) (w : AvxWidth)
+    (ret : w.type → MachineData → Effects) (bs : List UInt8) (R : DataMem → Prop)
+    (h_mem : s.dmem =⋆ Eq (bs.At addr) ⋆ R)
+    (h_len : bs.length = w.bytes) :
+    MachineData.loadAvx s addr w ret =
+      require_access require_read_access addr (UInt64.ofNat w.bytes)
+        (fun _ => ret (.ofInt w.bits (Int.ofBytes bs)) s) := by
+  simp only [MachineData.loadAvx, Bool.false_and, Bool.false_eq_true, ↓reduceIte,
+    Mem.loadInt_sep bs addr w.bytes R s.dmem h_mem h_len (by cases w <;> decide)]

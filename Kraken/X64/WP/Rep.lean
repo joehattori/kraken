@@ -644,3 +644,208 @@ public theorem Program.loop_repe_cmpsw_ne [Host] {p : Program} {H : Embedding p}
       hcont t' hm hz hzf hdf' hrcx'
         (by simpa [Width.bytes, Nat.mul_comm] using hrsi')
         (by simpa [Width.bytes, Nat.mul_comm] using hrdi') hother)
+
+/-- When `%rcx = 0`, `rep movs` terminates immediately without executing or modifying state. -/
+public theorem Program.loop_rep_movs_zero [Host] {p : Program} {H : Embedding p} {i : Nat}
+    {w : Width}
+    (hi : p[i]? = some (.instr (.regular .W64 w (.movs true))))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    {s : MachineData} (hrcx : s.regs.get64 .rcx = 0#64)
+    (hcont : Program.LoopCont p H Q E ⟨s, Host.addrOf (H.start + i + 1)⟩) :
+    Program.Loop p H Q E ⟨s, Host.addrOf (H.start + i)⟩ := by
+  refine Program.loop_of_interp hi ?_
+  dsimp only [Directive.interp, Instr.interp, Operation.interp]
+  rw [rep_get_low64, hrcx]
+  simp only [Effects.All]
+  exact hcont
+
+/-- When `%rcx = 0`, `rep movsw` terminates immediately without executing or modifying state. -/
+public theorem Program.loop_rep_movsw_zero [Host] {p : Program} {H : Embedding p} {i : Nat}
+    (hi : p[i]? = some (.instr (.regular .W64 .W16 (.movs true))))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    {s : MachineData} (hrcx : s.regs.get64 .rcx = 0#64)
+    (hcont : Program.LoopCont p H Q E ⟨s, Host.addrOf (H.start + i + 1)⟩) :
+    Program.Loop p H Q E ⟨s, Host.addrOf (H.start + i)⟩ :=
+  Program.loop_rep_movs_zero hi hrcx hcont
+
+private theorem loop_rep_movs_aux [Host] {p : Program} {H : Embedding p} {i : Nat}
+    {w : Width}
+    (hi : p[i]? = some (.instr (.regular .W64 w (.movs true))))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    (rsi0 rdi0 : BitVec 64) (f : Nat → BitVec w.bits)
+    (n : Nat) (Inv : Nat → DataMem → Prop)
+    (hstep : ∀ k (mem : DataMem), k < n → Inv k mem →
+      ∃ x y,
+        mem.loadInt (rsi0 + .ofNat 64 (k * w.bytes)) w.bytes = some x ∧
+        BitVec.ofInt w.bits x = f k ∧
+        mem.loadInt (rdi0 + .ofNat 64 (k * w.bytes)) w.bytes = some y ∧
+        Inv (k + 1) (mem.storeInt (rdi0 + .ofNat 64 (k * w.bytes)) w.bytes (f k).toInt))
+    (m : Nat) :
+    ∀ (k : Nat) (t : MachineData),
+      k + (m + 1) = n →
+      n < 2 ^ 64 →
+      t.status.df = false →
+      t.regs.get64 .rcx = .ofNat 64 (m + 1) →
+      t.regs.get64 .rsi = rsi0 + .ofNat 64 (k * w.bytes) →
+      t.regs.get64 .rdi = rdi0 + .ofNat 64 (k * w.bytes) →
+      Inv k t.dmem →
+      (∀ t',
+        Inv n t'.dmem →
+        t'.zmms = t.zmms →
+        t'.status = t.status →
+        t'.regs.get64 .rcx = 0#64 →
+        t'.regs.get64 .rsi = rsi0 + .ofNat 64 (n * w.bytes) →
+        t'.regs.get64 .rdi = rdi0 + .ofNat 64 (n * w.bytes) →
+        (∀ r, r ∉ [Reg64.rcx, Reg64.rdi, Reg64.rsi] → t'.regs.get64 r = t.regs.get64 r) →
+        Program.LoopCont p H Q E ⟨t', Host.addrOf (H.start + i + 1)⟩) →
+      Program.Loop p H Q E ⟨t, Host.addrOf (H.start + i)⟩ := by
+  induction m with
+  | zero =>
+    intro k t hkn hn64 hdf hrcx hrsi hrdi hinv hcont
+    have hlt_i : i < p.length := (List.getElem?_eq_some_iff.mp hi).1
+    obtain ⟨x, y, hx_load, hx_val, hy_load, hinv_next⟩ := hstep k t.dmem (by omega) hinv
+    have hne0 : (BitVec.ofNat 64 (0 + 1) == (0 : BitVec 64)) = false := rfl
+    refine Program.loop_of_interp hi ?_
+    dsimp only [Directive.interp, Instr.interp, Operation.interp]
+    rw [rep_all_require_exec, rep_get_low64, hrcx, hne0]
+    simp only [Bool.true_and, Bool.false_eq_true, ↓reduceIte,
+      rep_zeroExtend_64]
+    rw [rep_get_low64, rep_get_low64, hrsi, hrdi]
+    dsimp only [MachineData.load, MachineData.store]
+    simp only [Effects.All_require_read_access, Effects.All_require_write_access,
+      hx_load, hy_load, hx_val]
+    rw [strStep_64_df_false (by simp [hdf]), strStep_64_df_false (by simp [hdf])]
+    simp only [MachineData.setReg, rep_set_low64, rep_get_low64]
+    rw [regs_cmps_rcx, hrcx, rep_ofNat64_pred]
+    have hzero_bne : (BitVec.ofNat 64 0 != (0 : BitVec 64)) = false := rfl
+    rw [hzero_bne]
+    simp only [Bool.false_eq_true, ↓reduceIte, Effects.All]
+    have hinv_n : Inv n (t.dmem.storeInt (rdi0 + .ofNat 64 (k * w.bytes)) w.bytes (f k).toInt) := by
+      simpa [show n = k + 1 by omega] using hinv_next
+    refine hcont _ hinv_n rfl rfl ?_ ?_ ?_ (fun r hr => ?_)
+    · rw [regs_cmps_set64_rcx]
+    · rw [regs_cmps_set64_rsi, hrsi]
+      have hbytes : w.bytesv = BitVec.ofNat 64 w.bytes := rfl
+      rw [hbytes, BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.succ_mul]
+      simp [show n = k + 1 by omega]
+    · rw [regs_cmps_set64_rdi, rep_get64_set64]
+      change t.regs.get64 .rdi + w.bytesv = _
+      rw [hrdi]
+      have hbytes : w.bytesv = BitVec.ofNat 64 w.bytes := rfl
+      rw [hbytes, BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.succ_mul]
+      simp [show n = k + 1 by omega]
+    · exact regs_cmps_set64_other _ _ _ _ hr
+  | succ m' ih =>
+    intro k t hkn hn64 hdf hrcx hrsi hrdi hinv hcont
+    have hlt_i : i < p.length := (List.getElem?_eq_some_iff.mp hi).1
+    obtain ⟨x, y, hx_load, hx_val, hy_load, hinv_next⟩ := hstep k t.dmem (by omega) hinv
+    have hne0 : (BitVec.ofNat 64 (m' + 1 + 1) == (0 : BitVec 64)) = false :=
+      rep_ofNat64_succ_ne_zero (by omega) (by omega)
+    have hne_rem : (BitVec.ofNat 64 (m' + 1) != (0 : BitVec 64)) = true := by
+      rw [bne_iff_ne]
+      exact beq_eq_false_iff_ne.mp (rep_ofNat64_succ_ne_zero (by omega) (by omega))
+    refine Program.loop_of_interp hi ?_
+    dsimp only [Directive.interp, Instr.interp, Operation.interp]
+    rw [rep_all_require_exec, rep_get_low64, hrcx, hne0]
+    simp only [Bool.true_and, Bool.false_eq_true, ↓reduceIte,
+      rep_zeroExtend_64]
+    rw [rep_get_low64, rep_get_low64, hrsi, hrdi]
+    dsimp only [MachineData.load, MachineData.store]
+    simp only [Effects.All_require_read_access, Effects.All_require_write_access,
+      hx_load, hy_load, hx_val]
+    rw [strStep_64_df_false (by simp [hdf]), strStep_64_df_false (by simp [hdf])]
+    simp only [MachineData.setReg, rep_set_low64, rep_get_low64]
+    rw [regs_cmps_rcx, hrcx, rep_ofNat64_pred]
+    simp only [hne_rem, ↓reduceIte, Effects.All]
+    change Program.LoopCont p H Q E ⟨_, Host.addrOf (H.start + i)⟩
+    refine Program.loopCont_of_le (j := i) (Nat.le_of_lt hlt_i) ?_
+    refine ih (k + 1) _ (by omega) hn64 hdf ?_ ?_ ?_ hinv_next ?_
+    · rw [regs_cmps_set64_rcx]
+    · rw [regs_cmps_set64_rsi, hrsi]
+      have hbytes : w.bytesv = BitVec.ofNat 64 w.bytes := rfl
+      rw [hbytes, BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.succ_mul]
+    · rw [regs_cmps_set64_rdi, rep_get64_set64]
+      change t.regs.get64 .rdi + w.bytesv = _
+      rw [hrdi]
+      have hbytes : w.bytesv = BitVec.ofNat 64 w.bytes := rfl
+      rw [hbytes, BitVec.add_assoc, ← BitVec.ofNat_add, ← Nat.succ_mul]
+    · intro t' hinv' hz' hst' hrcx' hrsi' hrdi' hother'
+      refine hcont t' hinv' hz' hst' hrcx' hrsi' hrdi' (fun r hr => ?_)
+      rw [hother' r hr]
+      exact regs_cmps_set64_other _ _ _ _ hr
+
+/--
+When `DF = 0` and `%rcx = n` with `0 < n < 2^64`, `rep movs` copies `n` elements of width `w`
+from `%rsi` to `%rdi`, advancing `Inv` from step `0` to `n`.
+-/
+public theorem Program.loop_rep_movs [Host] {p : Program} {H : Embedding p} {i : Nat}
+    {w : Width}
+    (hi : p[i]? = some (.instr (.regular .W64 w (.movs true))))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    {s : MachineData} {n : Nat} (hn0 : 0 < n) (hn64 : n < 2 ^ 64)
+    (hdf : s.status.df = false)
+    (hrcx : s.regs.get64 .rcx = .ofNat 64 n)
+    (rsi0 rdi0 : BitVec 64)
+    (hrsi : s.regs.get64 .rsi = rsi0)
+    (hrdi : s.regs.get64 .rdi = rdi0)
+    (f : Nat → BitVec w.bits)
+    (Inv : Nat → DataMem → Prop)
+    (hinv0 : Inv 0 s.dmem)
+    (hstep : ∀ k (mem : DataMem), k < n → Inv k mem →
+      ∃ x y,
+        mem.loadInt (rsi0 + .ofNat 64 (k * w.bytes)) w.bytes = some x ∧
+        BitVec.ofInt w.bits x = f k ∧
+        mem.loadInt (rdi0 + .ofNat 64 (k * w.bytes)) w.bytes = some y ∧
+        Inv (k + 1) (mem.storeInt (rdi0 + .ofNat 64 (k * w.bytes)) w.bytes (f k).toInt))
+    (hcont : ∀ t',
+      Inv n t'.dmem →
+      t'.zmms = s.zmms →
+      t'.status = s.status →
+      t'.regs.get64 .rcx = 0#64 →
+      t'.regs.get64 .rsi = rsi0 + .ofNat 64 (n * w.bytes) →
+      t'.regs.get64 .rdi = rdi0 + .ofNat 64 (n * w.bytes) →
+      (∀ r, r ∉ [Reg64.rcx, Reg64.rdi, Reg64.rsi] → t'.regs.get64 r = s.regs.get64 r) →
+      Program.LoopCont p H Q E ⟨t', Host.addrOf (H.start + i + 1)⟩) :
+    Program.Loop p H Q E ⟨s, Host.addrOf (H.start + i)⟩ := by
+  cases n with
+  | zero => omega
+  | succ m =>
+    refine loop_rep_movs_aux hi rsi0 rdi0 f (m + 1) Inv hstep m 0 s (Nat.zero_add _) hn64 hdf hrcx ?_ ?_ hinv0 hcont
+    · rw [Nat.zero_mul, hrsi]; simp
+    · rw [Nat.zero_mul, hrdi]; simp
+
+/-- Specialization of `Program.loop_rep_movs` to `rep movsw`. -/
+public theorem Program.loop_rep_movsw [Host] {p : Program} {H : Embedding p} {i : Nat}
+    (hi : p[i]? = some (.instr (.regular .W64 .W16 (.movs true))))
+    {Q : MachineData → Prop} {E : Int64 → MachineData → Prop}
+    {s : MachineData} {n : Nat} (hn0 : 0 < n) (hn64 : n < 2 ^ 64)
+    (hdf : s.status.df = false)
+    (hrcx : s.regs.get64 .rcx = .ofNat 64 n)
+    (rsi0 rdi0 : BitVec 64)
+    (hrsi : s.regs.get64 .rsi = rsi0)
+    (hrdi : s.regs.get64 .rdi = rdi0)
+    (f : Nat → BitVec 16)
+    (Inv : Nat → DataMem → Prop)
+    (hinv0 : Inv 0 s.dmem)
+    (hstep : ∀ k (mem : DataMem), k < n → Inv k mem →
+      ∃ x y,
+        mem.loadInt (rsi0 + .ofNat 64 (2 * k)) 2 = some x ∧
+        BitVec.ofInt 16 x = f k ∧
+        mem.loadInt (rdi0 + .ofNat 64 (2 * k)) 2 = some y ∧
+        Inv (k + 1) (mem.storeInt (rdi0 + .ofNat 64 (2 * k)) 2 (f k).toInt))
+    (hcont : ∀ t',
+      Inv n t'.dmem →
+      t'.zmms = s.zmms →
+      t'.status = s.status →
+      t'.regs.get64 .rcx = 0#64 →
+      t'.regs.get64 .rsi = rsi0 + .ofNat 64 (2 * n) →
+      t'.regs.get64 .rdi = rdi0 + .ofNat 64 (2 * n) →
+      (∀ r, r ∉ [Reg64.rcx, Reg64.rdi, Reg64.rsi] → t'.regs.get64 r = s.regs.get64 r) →
+      Program.LoopCont p H Q E ⟨t', Host.addrOf (H.start + i + 1)⟩) :
+    Program.Loop p H Q E ⟨s, Host.addrOf (H.start + i)⟩ :=
+  Program.loop_rep_movs hi hn0 hn64 hdf hrcx rsi0 rdi0 hrsi hrdi f Inv hinv0
+    (fun k mem hk hinv => by simpa [Width.bytes, Nat.mul_comm] using hstep k mem hk hinv)
+    (fun t' hinv' hz' hst' hrcx' hrsi' hrdi' hother' =>
+      hcont t' hinv' hz' hst' hrcx'
+        (by simpa [Width.bytes, Nat.mul_comm] using hrsi')
+        (by simpa [Width.bytes, Nat.mul_comm] using hrdi') hother')
