@@ -25,337 +25,351 @@ public section
 /--
 AVX2 assembly template for `String.indexOf(ch)` (`start_at_zero = true`).
 -/
-@[expose] public def stringIndexOfProg (slow : Label)
+@[expose] public def stringIndexOfNoCheckProg
     (str search_value out : Reg64)
     (temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256) : _root_.Program := parse("
-    # 0. Check code point > 0xFFFF:
-    cmpl $65535, %❰.low search_value .W32❱
-    ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
-
-    # 2. Load count_
+    # 0. Load count_
     movl 8(%❰str❱), %❰.low temp_len .W32❱
-    testl %❰.low temp_len .W32❱, %❰.low temp_len .W32❱      # 3
-    je not_found                                            # 4
+    testl %❰.low temp_len .W32❱, %❰.low temp_len .W32❱      # 1
+    je not_found                                            # 2
 
-    movl %❰.low temp_len .W32❱, %❰.low temp_mask .W32❱      # 5
-    shrl $1, %❰.low temp_len .W32❱                          # 6
+    movl %❰.low temp_len .W32❱, %❰.low temp_mask .W32❱      # 3
+    shrl $1, %❰.low temp_len .W32❱                          # 4
 
-    xorq %❰.low temp_offset .W64❱, %❰.low temp_offset .W64❱  # 7
+    xorq %❰.low temp_offset .W64❱, %❰.low temp_offset .W64❱  # 5
 
-    movl %❰.low temp_len .W32❱, %ecx                        # 8
-    subl %❰.low temp_offset .W32❱, %ecx                     # 9
+    movl %❰.low temp_len .W32❱, %ecx                        # 6
+    subl %❰.low temp_offset .W32❱, %ecx                     # 7
 
-    testl $1, %❰.low temp_mask .W32❱                        # 10
-    jne uncompressed_path                                   # 11
+    testl $1, %❰.low temp_mask .W32❱                        # 8
+    jne uncompressed_path                                   # 9
 
     # === COMPRESSED PATH ===
-    cmpl $127, %❰.low search_value .W32❱                    # 12
-    jg not_found                                            # 13
+    cmpl $127, %❰.low search_value .W32❱                    # 10
+    jg not_found                                            # 11
 
-    cmpl $32, %❰.low temp_len .W32❱                         # 14
-    jb compressed_scalar_loop                               # 15
+    cmpl $32, %❰.low temp_len .W32❱                         # 12
+    jb compressed_scalar_loop                               # 13
 
-    # 16. vmovd search_value, ymm_match
+    # 14. vmovd search_value, ymm_match
     ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
-    vpbroadcastb %❰ymm_match❱, %❰ymm_target❱                # 17
+    vpbroadcastb %❰ymm_match❱, %❰ymm_target❱                # 15
 
-    cmpl $32, %ecx                                          # 18
-    jb compressed_tail                                      # 19
+    cmpl $32, %ecx                                          # 16
+    jb compressed_tail                                      # 17
 
-  compressed_avx_loop:                                      # 20
-    # 21. vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
+  compressed_avx_loop:                                      # 18
+    # 19. vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
     vpcmpeqb 16(%❰str❱,%❰temp_offset❱,1), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 22
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 23
-    jne compressed_match_found                              # 24
-    addq $32, %❰.low temp_offset .W64❱                      # 25
-    subl $32, %ecx                                          # 26
-    cmpl $32, %ecx                                          # 27
-    jae compressed_avx_loop                                 # 28
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 20
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 21
+    jne compressed_match_found                              # 22
+    addq $32, %❰.low temp_offset .W64❱                      # 23
+    subl $32, %ecx                                          # 24
+    cmpl $32, %ecx                                          # 25
+    jae compressed_avx_loop                                 # 26
 
-  compressed_tail:                                          # 29
-    testl %ecx, %ecx                                        # 30
-    je not_found_vzero                                      # 31
+  compressed_tail:                                          # 27
+    testl %ecx, %ecx                                        # 28
+    je not_found_vzero                                      # 29
 
-    # 32. vpcmpeqb -16(str, temp_len, 1), ymm_target, ymm_match
+    # 30. vpcmpeqb -16(str, temp_len, 1), ymm_target, ymm_match
     vpcmpeqb -16(%❰str❱,%❰temp_len❱,1), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 33
-    negl %ecx                                               # 34
-    addl $32, %ecx                                          # 35
-    shrl %cl, %❰.low temp_mask .W32❱                        # 36
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 37
-    je not_found_vzero                                      # 38
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 39
-    addl %ecx, %❰.low temp_offset .W32❱                     # 40
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 41
-    vzeroupper                                              # 42
-    jmp done                                                # 43
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 31
+    negl %ecx                                               # 32
+    addl $32, %ecx                                          # 33
+    shrl %cl, %❰.low temp_mask .W32❱                        # 34
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 35
+    je not_found_vzero                                      # 36
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 37
+    addl %ecx, %❰.low temp_offset .W32❱                     # 38
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 39
+    vzeroupper                                              # 40
+    jmp done                                                # 41
 
-  compressed_match_found:                                   # 44
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 45
-    addl %ecx, %❰.low temp_offset .W32❱                     # 46
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 47
-    vzeroupper                                              # 48
-    jmp done                                                # 49
-
-  compressed_scalar_loop:                                   # 50
-    # 51. movzxb 16(str, temp_offset, 1), temp_mask
-    movzbl 16(%❰str❱,%❰temp_offset❱,1), %❰.low temp_mask .W32❱
-    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 52
-    je compressed_scalar_found                              # 53
-    addq $1, %❰.low temp_offset .W64❱                       # 54
-    subl $1, %ecx                                           # 55
-    jne compressed_scalar_loop                              # 56
-    jmp not_found                                           # 57
-
-  compressed_scalar_found:                                  # 58
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 59
-    jmp done                                                # 60
-
-  # === UNCOMPRESSED PATH ===
-  uncompressed_path:                                        # 61
-    cmpl $16, %❰.low temp_len .W32❱                         # 62
-    jb uncompressed_scalar_loop                             # 63
-
-    # 64. vmovd search_value, ymm_match
-    ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
-    vpbroadcastw %❰ymm_match❱, %❰ymm_target❱                # 65
-
-    cmpl $16, %ecx                                          # 66
-    jb uncompressed_tail                                    # 67
-
-  uncompressed_avx_loop:                                    # 68
-    # 69. vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
-    vpcmpeqw 16(%❰str❱,%❰temp_offset❱,2), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 70
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 71
-    jne uncompressed_match_found                            # 72
-    addq $16, %❰.low temp_offset .W64❱                      # 73
-    subl $16, %ecx                                          # 74
-    cmpl $16, %ecx                                          # 75
-    jae uncompressed_avx_loop                               # 76
-
-  uncompressed_tail:                                        # 77
-    testl %ecx, %ecx                                        # 78
-    je not_found_vzero                                      # 79
-
-    # 80. vpcmpeqw -16(str, temp_len, 2), ymm_target, ymm_match
-    vpcmpeqw -16(%❰str❱,%❰temp_len❱,2), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 81
-    shll $1, %ecx                                           # 82
-    negl %ecx                                               # 83
-    addl $32, %ecx                                          # 84
-    shrl %cl, %❰.low temp_mask .W32❱                        # 85
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 86
-    je not_found_vzero                                      # 87
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 88
-    shrl $1, %ecx                                           # 89
-    addl %ecx, %❰.low temp_offset .W32❱                     # 90
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 91
-    vzeroupper                                              # 92
-    jmp done                                                # 93
-
-  uncompressed_match_found:                                 # 94
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 95
-    shrl $1, %ecx                                           # 96
-    addl %ecx, %❰.low temp_offset .W32❱                     # 97
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 98
-    vzeroupper                                              # 99
-    jmp done                                                # 100
-
-  uncompressed_scalar_loop:                                 # 101
-    # 102. movzxw 16(str, temp_offset, 2), temp_mask
-    movzwl 16(%❰str❱,%❰temp_offset❱,2), %❰.low temp_mask .W32❱
-    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 103
-    je uncompressed_scalar_found                            # 104
-    addq $1, %❰.low temp_offset .W64❱                       # 105
-    subl $1, %ecx                                           # 106
-    jne uncompressed_scalar_loop                            # 107
-    jmp not_found                                           # 108
-
-  uncompressed_scalar_found:                                # 109
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 110
-    jmp done                                                # 111
-
-  not_found_vzero:                                          # 112
-    vzeroupper                                              # 113
-
-  not_found:                                                # 114
-    movl $-1, %❰.low out .W32❱                              # 115
-
-  done:                                                     # 116
-")
-
-/--
-AVX2 assembly template for `String.indexOf(ch, fromIndex)` (`start_at_zero = false`).
--/
-@[expose] public def stringIndexOfAfterProg (slow : Label)
-    (str search_value start_idx out : Reg64)
-    (temp_len temp_offset temp_mask : Reg64)
-    (ymm_target ymm_match : AvxReg .W256) : _root_.Program := parse("
-    # 0. Check code point > 0xFFFF:
-    cmpl $65535, %❰.low search_value .W32❱
-    ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
-
-    # 2. Load count_
-    movl 8(%❰str❱), %❰.low temp_len .W32❱
-    testl %❰.low temp_len .W32❱, %❰.low temp_len .W32❱      # 3
-    je not_found                                            # 4
-
-    movl %❰.low temp_len .W32❱, %❰.low temp_mask .W32❱      # 5
-    shrl $1, %❰.low temp_len .W32❱                          # 6
-
-    cmpl %❰.low temp_len .W32❱, %❰.low start_idx .W32❱      # 7
-    jge not_found                                           # 8
-
-    xorq %❰.low temp_offset .W64❱, %❰.low temp_offset .W64❱  # 9
-    cmpl $0, %❰.low start_idx .W32❱                         # 10
-    cmovg %❰.low start_idx .W32❱, %❰.low temp_offset .W32❱  # 11
-
-    movl %❰.low temp_len .W32❱, %ecx                        # 12
-    subl %❰.low temp_offset .W32❱, %ecx                     # 13
-
-    testl $1, %❰.low temp_mask .W32❱                        # 14
-    jne uncompressed_path                                   # 15
-
-    # === COMPRESSED PATH ===
-    cmpl $127, %❰.low search_value .W32❱                    # 16
-    jg not_found                                            # 17
-
-    cmpl $32, %❰.low temp_len .W32❱                         # 18
-    jb compressed_scalar_loop                               # 19
-
-    # 20. vmovd search_value, ymm_match
-    ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
-    vpbroadcastb %❰ymm_match❱, %❰ymm_target❱                # 21
-
-    cmpl $32, %ecx                                          # 22
-    jb compressed_tail                                      # 23
-
-  compressed_avx_loop:                                      # 24
-    # 25. vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
-    vpcmpeqb 16(%❰str❱,%❰temp_offset❱,1), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 26
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 27
-    jne compressed_match_found                              # 28
-    addq $32, %❰.low temp_offset .W64❱                      # 29
-    subl $32, %ecx                                          # 30
-    cmpl $32, %ecx                                          # 31
-    jae compressed_avx_loop                                 # 32
-
-  compressed_tail:                                          # 33
-    testl %ecx, %ecx                                        # 34
-    je not_found_vzero                                      # 35
-
-    # 36. vpcmpeqb -16(str, temp_len, 1), ymm_target, ymm_match
-    vpcmpeqb -16(%❰str❱,%❰temp_len❱,1), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 37
-    negl %ecx                                               # 38
-    addl $32, %ecx                                          # 39
-    shrl %cl, %❰.low temp_mask .W32❱                        # 40
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 41
-    je not_found_vzero                                      # 42
+  compressed_match_found:                                   # 42
     bsf %❰.low temp_mask .W32❱, %ecx                        # 43
     addl %ecx, %❰.low temp_offset .W32❱                     # 44
     movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 45
     vzeroupper                                              # 46
     jmp done                                                # 47
 
-  compressed_match_found:                                   # 48
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 49
-    addl %ecx, %❰.low temp_offset .W32❱                     # 50
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 51
-    vzeroupper                                              # 52
-    jmp done                                                # 53
-
-  compressed_scalar_loop:                                   # 54
-    # 55. movzxb 16(str, temp_offset, 1), temp_mask
+  compressed_scalar_loop:                                   # 48
+    # 49. movzxb 16(str, temp_offset, 1), temp_mask
     movzbl 16(%❰str❱,%❰temp_offset❱,1), %❰.low temp_mask .W32❱
-    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 56
-    je compressed_scalar_found                              # 57
-    addq $1, %❰.low temp_offset .W64❱                       # 58
-    subl $1, %ecx                                           # 59
-    jne compressed_scalar_loop                              # 60
-    jmp not_found                                           # 61
+    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 50
+    je compressed_scalar_found                              # 51
+    addq $1, %❰.low temp_offset .W64❱                       # 52
+    subl $1, %ecx                                           # 53
+    jne compressed_scalar_loop                              # 54
+    jmp not_found                                           # 55
 
-  compressed_scalar_found:                                  # 62
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 63
-    jmp done                                                # 64
+  compressed_scalar_found:                                  # 56
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 57
+    jmp done                                                # 58
 
   # === UNCOMPRESSED PATH ===
-  uncompressed_path:                                        # 65
-    cmpl $16, %❰.low temp_len .W32❱                         # 66
-    jb uncompressed_scalar_loop                             # 67
+  uncompressed_path:                                        # 59
+    cmpl $16, %❰.low temp_len .W32❱                         # 60
+    jb uncompressed_scalar_loop                             # 61
 
-    # 68. vmovd search_value, ymm_match
+    # 62. vmovd search_value, ymm_match
     ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
-    vpbroadcastw %❰ymm_match❱, %❰ymm_target❱                # 69
+    vpbroadcastw %❰ymm_match❱, %❰ymm_target❱                # 63
 
-    cmpl $16, %ecx                                          # 70
-    jb uncompressed_tail                                    # 71
+    cmpl $16, %ecx                                          # 64
+    jb uncompressed_tail                                    # 65
 
-  uncompressed_avx_loop:                                    # 72
-    # 73. vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
+  uncompressed_avx_loop:                                    # 66
+    # 67. vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
     vpcmpeqw 16(%❰str❱,%❰temp_offset❱,2), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 74
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 75
-    jne uncompressed_match_found                            # 76
-    addq $16, %❰.low temp_offset .W64❱                      # 77
-    subl $16, %ecx                                          # 78
-    cmpl $16, %ecx                                          # 79
-    jae uncompressed_avx_loop                               # 80
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 68
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 69
+    jne uncompressed_match_found                            # 70
+    addq $16, %❰.low temp_offset .W64❱                      # 71
+    subl $16, %ecx                                          # 72
+    cmpl $16, %ecx                                          # 73
+    jae uncompressed_avx_loop                               # 74
 
-  uncompressed_tail:                                        # 81
-    testl %ecx, %ecx                                        # 82
-    je not_found_vzero                                      # 83
+  uncompressed_tail:                                        # 75
+    testl %ecx, %ecx                                        # 76
+    je not_found_vzero                                      # 77
 
-    # 84. vpcmpeqw -16(str, temp_len, 2), ymm_target, ymm_match
+    # 78. vpcmpeqw -16(str, temp_len, 2), ymm_target, ymm_match
     vpcmpeqw -16(%❰str❱,%❰temp_len❱,2), %❰ymm_target❱, %❰ymm_match❱
-    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 85
-    shll $1, %ecx                                           # 86
-    negl %ecx                                               # 87
-    addl $32, %ecx                                          # 88
-    shrl %cl, %❰.low temp_mask .W32❱                        # 89
-    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 90
-    je not_found_vzero                                      # 91
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 92
-    shrl $1, %ecx                                           # 93
-    addl %ecx, %❰.low temp_offset .W32❱                     # 94
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 95
-    vzeroupper                                              # 96
-    jmp done                                                # 97
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 79
+    shll $1, %ecx                                           # 80
+    negl %ecx                                               # 81
+    addl $32, %ecx                                          # 82
+    shrl %cl, %❰.low temp_mask .W32❱                        # 83
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 84
+    je not_found_vzero                                      # 85
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 86
+    shrl $1, %ecx                                           # 87
+    addl %ecx, %❰.low temp_offset .W32❱                     # 88
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 89
+    vzeroupper                                              # 90
+    jmp done                                                # 91
 
-  uncompressed_match_found:                                 # 98
-    bsf %❰.low temp_mask .W32❱, %ecx                        # 99
-    shrl $1, %ecx                                           # 100
-    addl %ecx, %❰.low temp_offset .W32❱                     # 101
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 102
-    vzeroupper                                              # 103
-    jmp done                                                # 104
+  uncompressed_match_found:                                 # 92
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 93
+    shrl $1, %ecx                                           # 94
+    addl %ecx, %❰.low temp_offset .W32❱                     # 95
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 96
+    vzeroupper                                              # 97
+    jmp done                                                # 98
 
-  uncompressed_scalar_loop:                                 # 105
-    # 106. movzxw 16(str, temp_offset, 2), temp_mask
+  uncompressed_scalar_loop:                                 # 99
+    # 100. movzxw 16(str, temp_offset, 2), temp_mask
     movzwl 16(%❰str❱,%❰temp_offset❱,2), %❰.low temp_mask .W32❱
-    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 107
-    je uncompressed_scalar_found                            # 108
-    addq $1, %❰.low temp_offset .W64❱                       # 109
-    subl $1, %ecx                                           # 110
-    jne uncompressed_scalar_loop                            # 111
-    jmp not_found                                           # 112
+    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 101
+    je uncompressed_scalar_found                            # 102
+    addq $1, %❰.low temp_offset .W64❱                       # 103
+    subl $1, %ecx                                           # 104
+    jne uncompressed_scalar_loop                            # 105
+    jmp not_found                                           # 106
 
-  uncompressed_scalar_found:                                # 113
-    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 114
-    jmp done                                                # 115
+  uncompressed_scalar_found:                                # 107
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 108
+    jmp done                                                # 109
 
-  not_found_vzero:                                          # 116
-    vzeroupper                                              # 117
+  not_found_vzero:                                          # 110
+    vzeroupper                                              # 111
 
-  not_found:                                                # 118
-    movl $-1, %❰.low out .W32❱                              # 119
+  not_found:                                                # 112
+    movl $-1, %❰.low out .W32❱                              # 113
 
-  done:                                                     # 120
+  done:                                                     # 114
 ")
+
+/-- Checked AVX2 `String.indexOf(ch)` lowering. -/
+@[expose] public def stringIndexOfProg (slow : Label)
+    (str search_value out : Reg64)
+    (temp_len temp_offset temp_mask : Reg64)
+    (ymm_target ymm_match : AvxReg .W256) : _root_.Program :=
+  parse("
+    # 0. Check code point > 0xFFFF:
+    cmpl $65535, %❰.low search_value .W32❱
+    ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
+  ") ++ stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+
+/--
+AVX2 assembly template for `String.indexOf(ch, fromIndex)` (`start_at_zero = false`).
+-/
+@[expose] public def stringIndexOfAfterNoCheckProg
+    (str search_value start_idx out : Reg64)
+    (temp_len temp_offset temp_mask : Reg64)
+    (ymm_target ymm_match : AvxReg .W256) : _root_.Program := parse("
+    # 0. Load count_
+    movl 8(%❰str❱), %❰.low temp_len .W32❱
+    testl %❰.low temp_len .W32❱, %❰.low temp_len .W32❱      # 1
+    je not_found                                            # 2
+
+    movl %❰.low temp_len .W32❱, %❰.low temp_mask .W32❱      # 3
+    shrl $1, %❰.low temp_len .W32❱                          # 4
+
+    cmpl %❰.low temp_len .W32❱, %❰.low start_idx .W32❱      # 5
+    jge not_found                                           # 6
+
+    xorq %❰.low temp_offset .W64❱, %❰.low temp_offset .W64❱  # 7
+    cmpl $0, %❰.low start_idx .W32❱                         # 8
+    cmovg %❰.low start_idx .W32❱, %❰.low temp_offset .W32❱  # 9
+
+    movl %❰.low temp_len .W32❱, %ecx                        # 10
+    subl %❰.low temp_offset .W32❱, %ecx                     # 11
+
+    testl $1, %❰.low temp_mask .W32❱                        # 12
+    jne uncompressed_path                                   # 13
+
+    # === COMPRESSED PATH ===
+    cmpl $127, %❰.low search_value .W32❱                    # 14
+    jg not_found                                            # 15
+
+    cmpl $32, %❰.low temp_len .W32❱                         # 16
+    jb compressed_scalar_loop                               # 17
+
+    # 18. vmovd search_value, ymm_match
+    ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
+    vpbroadcastb %❰ymm_match❱, %❰ymm_target❱                # 19
+
+    cmpl $32, %ecx                                          # 20
+    jb compressed_tail                                      # 21
+
+  compressed_avx_loop:                                      # 22
+    # 23. vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
+    vpcmpeqb 16(%❰str❱,%❰temp_offset❱,1), %❰ymm_target❱, %❰ymm_match❱
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 24
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 25
+    jne compressed_match_found                              # 26
+    addq $32, %❰.low temp_offset .W64❱                      # 27
+    subl $32, %ecx                                          # 28
+    cmpl $32, %ecx                                          # 29
+    jae compressed_avx_loop                                 # 30
+
+  compressed_tail:                                          # 31
+    testl %ecx, %ecx                                        # 32
+    je not_found_vzero                                      # 33
+
+    # 34. vpcmpeqb -16(str, temp_len, 1), ymm_target, ymm_match
+    vpcmpeqb -16(%❰str❱,%❰temp_len❱,1), %❰ymm_target❱, %❰ymm_match❱
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 35
+    negl %ecx                                               # 36
+    addl $32, %ecx                                          # 37
+    shrl %cl, %❰.low temp_mask .W32❱                        # 38
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 39
+    je not_found_vzero                                      # 40
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 41
+    addl %ecx, %❰.low temp_offset .W32❱                     # 42
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 43
+    vzeroupper                                              # 44
+    jmp done                                                # 45
+
+  compressed_match_found:                                   # 46
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 47
+    addl %ecx, %❰.low temp_offset .W32❱                     # 48
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 49
+    vzeroupper                                              # 50
+    jmp done                                                # 51
+
+  compressed_scalar_loop:                                   # 52
+    # 53. movzxb 16(str, temp_offset, 1), temp_mask
+    movzbl 16(%❰str❱,%❰temp_offset❱,1), %❰.low temp_mask .W32❱
+    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 54
+    je compressed_scalar_found                              # 55
+    addq $1, %❰.low temp_offset .W64❱                       # 56
+    subl $1, %ecx                                           # 57
+    jne compressed_scalar_loop                              # 58
+    jmp not_found                                           # 59
+
+  compressed_scalar_found:                                  # 60
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 61
+    jmp done                                                # 62
+
+  # === UNCOMPRESSED PATH ===
+  uncompressed_path:                                        # 63
+    cmpl $16, %❰.low temp_len .W32❱                         # 64
+    jb uncompressed_scalar_loop                             # 65
+
+    # 66. vmovd search_value, ymm_match
+    ❰.instr (.avx .W64 .W256 (.vmovIn .W32 ymm_match (.reg (.low search_value .W32))))❱
+    vpbroadcastw %❰ymm_match❱, %❰ymm_target❱                # 67
+
+    cmpl $16, %ecx                                          # 68
+    jb uncompressed_tail                                    # 69
+
+  uncompressed_avx_loop:                                    # 70
+    # 71. vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
+    vpcmpeqw 16(%❰str❱,%❰temp_offset❱,2), %❰ymm_target❱, %❰ymm_match❱
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 72
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 73
+    jne uncompressed_match_found                            # 74
+    addq $16, %❰.low temp_offset .W64❱                      # 75
+    subl $16, %ecx                                          # 76
+    cmpl $16, %ecx                                          # 77
+    jae uncompressed_avx_loop                               # 78
+
+  uncompressed_tail:                                        # 79
+    testl %ecx, %ecx                                        # 80
+    je not_found_vzero                                      # 81
+
+    # 82. vpcmpeqw -16(str, temp_len, 2), ymm_target, ymm_match
+    vpcmpeqw -16(%❰str❱,%❰temp_len❱,2), %❰ymm_target❱, %❰ymm_match❱
+    vpmovmskb %❰ymm_match❱, %❰.low temp_mask .W32❱          # 83
+    shll $1, %ecx                                           # 84
+    negl %ecx                                               # 85
+    addl $32, %ecx                                          # 86
+    shrl %cl, %❰.low temp_mask .W32❱                        # 87
+    testl %❰.low temp_mask .W32❱, %❰.low temp_mask .W32❱    # 88
+    je not_found_vzero                                      # 89
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 90
+    shrl $1, %ecx                                           # 91
+    addl %ecx, %❰.low temp_offset .W32❱                     # 92
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 93
+    vzeroupper                                              # 94
+    jmp done                                                # 95
+
+  uncompressed_match_found:                                 # 96
+    bsf %❰.low temp_mask .W32❱, %ecx                        # 97
+    shrl $1, %ecx                                           # 98
+    addl %ecx, %❰.low temp_offset .W32❱                     # 99
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 100
+    vzeroupper                                              # 101
+    jmp done                                                # 102
+
+  uncompressed_scalar_loop:                                 # 103
+    # 104. movzxw 16(str, temp_offset, 2), temp_mask
+    movzwl 16(%❰str❱,%❰temp_offset❱,2), %❰.low temp_mask .W32❱
+    cmpl %❰.low temp_mask .W32❱, %❰.low search_value .W32❱  # 105
+    je uncompressed_scalar_found                            # 106
+    addq $1, %❰.low temp_offset .W64❱                       # 107
+    subl $1, %ecx                                           # 108
+    jne uncompressed_scalar_loop                            # 109
+    jmp not_found                                           # 110
+
+  uncompressed_scalar_found:                                # 111
+    movl %❰.low temp_offset .W32❱, %❰.low out .W32❱         # 112
+    jmp done                                                # 113
+
+  not_found_vzero:                                          # 114
+    vzeroupper                                              # 115
+
+  not_found:                                                # 116
+    movl $-1, %❰.low out .W32❱                              # 117
+
+  done:                                                     # 118
+")
+
+/-- Checked AVX2 `String.indexOf(ch, fromIndex)` lowering. -/
+@[expose] public def stringIndexOfAfterProg (slow : Label)
+    (str search_value start_idx out : Reg64)
+    (temp_len temp_offset temp_mask : Reg64)
+    (ymm_target ymm_match : AvxReg .W256) : _root_.Program :=
+  parse("
+    # 0. Check code point > 0xFFFF:
+    cmpl $65535, %❰.low search_value .W32❱
+    ❰.instr (.regular .W64 .W64 (.jcc .a slow))❱
+  ") ++ stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
 
 namespace Proof
 
@@ -407,127 +421,30 @@ theorem string_info_of {s : MachineData} {str : Reg64} {c : BitVec 32} {d : List
       rfl
     rw [this]
 
-theorem ret_slow [Host] (slow : Label) (str search_value out temp_len temp_offset temp_mask : Reg64)
-    (ymm1 ymm2 : AvxReg .W256) (chars : List (BitVec 16)) (fromIndex : BitVec 32)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
-    (s t : MachineData)
-    (ch : BitVec 32) (h_ch : ch.toNat > 65535)
-    (h_search : t.regs.get (Reg.low search_value Width.W32) = ch)
-    (h_regs : t.regs = s.regs)
-    (h_mem : t.dmem = s.dmem)
-    (h_zmms : t.zmms = s.zmms)
-    (hslow : IsSlowPathLabel (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H slow) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
-      (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 0)⟩ := by
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ch.isLt]
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) = false := by
-    conv => lhs; rw [h_eq]
-    have := cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-    rw [this]
-    simp only [decide_eq_false_iff_not]
-    omega
-  have h_zf : (ch - 65535#32 == 0#32) = false := by
-    rw [beq_eq_false_iff_ne]
-    intro h
-    have := congrArg BitVec.toNat h
-    simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-    omega
-  have h_cond : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !ch - 65535#32 == 0#32) = true := by
-    simp [h_cf, h_zf]
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-  sstep
-  rw [get_low32] at h_search
-  rw [h_search]
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  sstep
-  rw [h_cond]
-  simp only [↓reduceIte]
-  change Program.LoopCont _ _ _ _ ⟨_, label slow⟩
-  unfold Program.LoopCont
-  by_cases h : label slow = H.endAddr ∨ (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).IsLabelAddr (label slow) ∨
-      (∃ i < (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length, label slow = Host.addrOf (H.start + i))
-  · exact False.elim (hslow h)
-  · simp only [h, ↓reduceIte]
-    refine ⟨rfl, h_ch, h_regs, h_mem, h_zmms⟩
-
-theorem ret_slow_after [Host] (slow : Label) (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
-    (ymm1 ymm2 : AvxReg .W256) (chars : List (BitVec 16)) (fromIndex : BitVec 32)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
-    (s t : MachineData)
-    (ch : BitVec 32) (h_ch : ch.toNat > 65535)
-    (h_search : t.regs.get (Reg.low search_value Width.W32) = ch)
-    (h_regs : t.regs = s.regs)
-    (h_mem : t.dmem = s.dmem)
-    (h_zmms : t.zmms = s.zmms)
-    (hslow : IsSlowPathLabel (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H slow) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
-      (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 0)⟩ := by
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp [BitVec.toNat_ofNat, Nat.mod_eq_of_lt ch.isLt]
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) = false := by
-    conv => lhs; rw [h_eq]
-    have := cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-    rw [this]
-    simp only [decide_eq_false_iff_not]
-    omega
-  have h_zf : (ch - 65535#32 == 0#32) = false := by
-    rw [beq_eq_false_iff_ne]
-    intro h
-    have := congrArg BitVec.toNat h
-    simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-    omega
-  have h_cond : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !ch - 65535#32 == 0#32) = true := by
-    simp [h_cf, h_zf]
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
-  sstep
-  rw [get_low32] at h_search
-  rw [h_search]
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  sstep
-  rw [h_cond]
-  simp only [↓reduceIte]
-  change Program.LoopCont _ _ _ _ ⟨_, label slow⟩
-  unfold Program.LoopCont
-  by_cases h : label slow = H.endAddr ∨ (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).IsLabelAddr (label slow) ∨
-      (∃ i < (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length, label slow = Host.addrOf (H.start + i))
-  · exact False.elim (hslow h)
-  · simp only [h, ↓reduceIte]
-    refine ⟨rfl, h_ch, h_regs, h_mem, h_zmms⟩
-
-theorem ret_not_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_not_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 114)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-  -- Directive 114: .label "not_found"
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 112)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+  -- Directive 112: .label "not_found"
+  sstep
+  refine Program.loopCont_of_le (j := 113) (by rw [h_prog_len]; omega) ?_
+  -- Directive 113: movl $-1, out
+  sstep
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
   refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
-  -- Directive 115: movl $-1, out
-  sstep
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -546,37 +463,35 @@ theorem ret_not_found [Host] (slow : Label)
       · exact hr_out.2.2.2.1 h
       · exact hr_out.2.2.2.2 h)
 
-theorem ret_not_found_vzero [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_not_found_vzero [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 112)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-  -- Directive 112: .label "not_found_vzero"
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 110)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+  -- Directive 110: .label "not_found_vzero"
   sstep
-  refine Program.loopCont_of_le (j := 113) (by rw [h_prog_len]; omega) ?_
-  -- Directive 113: vzeroupper
+  refine Program.loopCont_of_le (j := 111) (by rw [h_prog_len]; omega) ?_
+  -- Directive 111: vzeroupper
   sstep
-  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
   obtain ⟨v1, v2, hv⟩ := hz
-  exact ret_not_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
+  exact ret_not_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
     h_distinct H s _ chars ch fromIndex hspec hm hr (Or.inr ⟨v1, v2, by rw [hv]⟩)
-theorem ret_compressed_scalar_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_scalar_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -585,24 +500,24 @@ theorem ret_compressed_scalar_found [Host] (slow : Label)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
     (hoff : BitVec.setWidth 32 (t.regs.get64 temp_offset) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 58)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-  -- Directive 58: .label "compressed_scalar_found"
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 56)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+  -- Directive 56: .label "compressed_scalar_found"
   sstep
-  refine Program.loopCont_of_le (j := 59) (by rw [h_prog_len]; omega) ?_
-  -- Directive 59: movl temp_offset, out
+  refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
+  -- Directive 57: movl temp_offset, out
   sstep
-  refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
-  -- Directive 60: jmp done
+  refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
+  -- Directive 58: jmp done
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -626,12 +541,11 @@ theorem bsf_add_trunc (A : BitVec 64) (B : BitVec 32) :
       BitVec.setWidth 32 (A + B.zeroExtend 64) := by
   bv_decide
 
-theorem ret_compressed_avx_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_avx_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -641,11 +555,11 @@ theorem ret_compressed_avx_found [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + (BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 44)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 42)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -⟩,
@@ -654,10 +568,10 @@ theorem ret_compressed_avx_found [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 44: .label "compressed_match_found"
+  -- Directive 42: .label "compressed_match_found"
   sstep
-  refine Program.loopCont_of_le (j := 45) (by rw [h_prog_len]; omega) ?_
-  -- Directive 45: bsfl temp_mask, %ecx
+  refine Program.loopCont_of_le (j := 43) (by rw [h_prog_len]; omega) ?_
+  -- Directive 43: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -665,23 +579,23 @@ theorem ret_compressed_avx_found [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
+  refine Program.loopCont_of_le (j := 44) (by rw [h_prog_len]; omega) ?_
+  -- Directive 44: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 45) (by rw [h_prog_len]; omega) ?_
+  -- Directive 45: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 46) (by rw [h_prog_len]; omega) ?_
-  -- Directive 46: addl %ecx, temp_offset
+  -- Directive 46: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 47) (by rw [h_prog_len]; omega) ?_
-  -- Directive 47: movl temp_offset, out
+  -- Directive 47: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 48) (by rw [h_prog_len]; omega) ?_
-  -- Directive 48: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 49) (by rw [h_prog_len]; omega) ?_
-  -- Directive 49: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -706,12 +620,11 @@ theorem ret_compressed_avx_found [Host] (slow : Label)
       · exact h4 rfl
       · exact h5 rfl)
 
-theorem ret_compressed_tail_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_tail_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -721,11 +634,11 @@ theorem ret_compressed_tail_found [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + (BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 39)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 37)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -⟩,
@@ -734,7 +647,7 @@ theorem ret_compressed_tail_found [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 39: bsfl temp_mask, %ecx
+  -- Directive 37: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -742,23 +655,23 @@ theorem ret_compressed_tail_found [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
+  refine Program.loopCont_of_le (j := 38) (by rw [h_prog_len]; omega) ?_
+  -- Directive 38: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
+  -- Directive 39: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 40) (by rw [h_prog_len]; omega) ?_
-  -- Directive 40: addl %ecx, temp_offset
+  -- Directive 40: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 41) (by rw [h_prog_len]; omega) ?_
-  -- Directive 41: movl temp_offset, out
+  -- Directive 41: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 42) (by rw [h_prog_len]; omega) ?_
-  -- Directive 42: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 43) (by rw [h_prog_len]; omega) ?_
-  -- Directive 43: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -789,12 +702,11 @@ theorem bsf_shr1_add_trunc (A : BitVec 64) (B : BitVec 32) :
       BitVec.setWidth 32 (A + (B >>> 1).zeroExtend 64) := by
   bv_decide
 
-theorem ret_uncompressed_avx_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_avx_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -804,11 +716,11 @@ theorem ret_uncompressed_avx_found [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + ((BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))) >>> 1).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 94)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 92)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -⟩,
@@ -817,10 +729,10 @@ theorem ret_uncompressed_avx_found [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 94: .label "uncompressed_match_found"
+  -- Directive 92: .label "uncompressed_match_found"
   sstep
-  refine Program.loopCont_of_le (j := 95) (by rw [h_prog_len]; omega) ?_
-  -- Directive 95: bsfl temp_mask, %ecx
+  refine Program.loopCont_of_le (j := 93) (by rw [h_prog_len]; omega) ?_
+  -- Directive 93: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -828,27 +740,27 @@ theorem ret_uncompressed_avx_found [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
-  refine Program.loopCont_of_le (j := 96) (by rw [h_prog_len]; omega) ?_
-  -- Directive 96: shrl $1, %ecx
+  refine Program.loopCont_of_le (j := 94) (by rw [h_prog_len]; omega) ?_
+  -- Directive 94: shrl $1, %ecx
   sstep
   intro _
+  refine Program.loopCont_of_le (j := 95) (by rw [h_prog_len]; omega) ?_
+  -- Directive 95: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 96) (by rw [h_prog_len]; omega) ?_
+  -- Directive 96: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 97) (by rw [h_prog_len]; omega) ?_
-  -- Directive 97: addl %ecx, temp_offset
+  -- Directive 97: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 98) (by rw [h_prog_len]; omega) ?_
-  -- Directive 98: movl temp_offset, out
+  -- Directive 98: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 99) (by rw [h_prog_len]; omega) ?_
-  -- Directive 99: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 100) (by rw [h_prog_len]; omega) ?_
-  -- Directive 100: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -873,12 +785,11 @@ theorem ret_uncompressed_avx_found [Host] (slow : Label)
       · exact h4 rfl
       · exact h5 rfl)
 
-theorem ret_uncompressed_scalar_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_scalar_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -887,20 +798,20 @@ theorem ret_uncompressed_scalar_found [Host] (slow : Label)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
     (hoff : BitVec.setWidth 32 (t.regs.get64 temp_offset) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 109)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 107)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
   sstep
-  refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 111) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -923,12 +834,11 @@ theorem ret_uncompressed_scalar_found [Host] (slow : Label)
 
 
 
-theorem ret_uncompressed_tail_found [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_tail_found [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -938,11 +848,11 @@ theorem ret_uncompressed_tail_found [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + ((BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))) >>> 1).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 88)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 86)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -⟩,
@@ -951,7 +861,7 @@ theorem ret_uncompressed_tail_found [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 88: bsfl temp_mask, %ecx
+  -- Directive 86: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -959,27 +869,27 @@ theorem ret_uncompressed_tail_found [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
-  refine Program.loopCont_of_le (j := 89) (by rw [h_prog_len]; omega) ?_
-  -- Directive 89: shrl $1, %ecx
+  refine Program.loopCont_of_le (j := 87) (by rw [h_prog_len]; omega) ?_
+  -- Directive 87: shrl $1, %ecx
   sstep
   intro _
+  refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
+  -- Directive 88: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 89) (by rw [h_prog_len]; omega) ?_
+  -- Directive 89: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 90) (by rw [h_prog_len]; omega) ?_
-  -- Directive 90: addl %ecx, temp_offset
+  -- Directive 90: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 91) (by rw [h_prog_len]; omega) ?_
-  -- Directive 91: movl temp_offset, out
+  -- Directive 91: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 92) (by rw [h_prog_len]; omega) ?_
-  -- Directive 92: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
+  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  -- Directive 114: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 93) (by rw [h_prog_len]; omega) ?_
-  -- Directive 93: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
-  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-  -- Directive 116: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -1005,28 +915,27 @@ theorem ret_uncompressed_tail_found [Host] (slow : Label)
       · exact h5 rfl)
 
 
-theorem ret_not_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_not_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 118)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 116)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
+  sstep
+  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  sstep
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
   sstep
   refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
-  sstep
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
-  sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -1045,36 +954,34 @@ theorem ret_not_found_after [Host] (slow : Label)
       · exact hr_out.2.2.2.1 h
       · exact hr_out.2.2.2.2 h)
 
-theorem ret_not_found_vzero_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_not_found_vzero_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (hspec : indexOfSpec chars ch fromIndex = -1#32)
     (hm : t.dmem = s.dmem)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 116)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 114)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   sstep
-  refine Program.loopCont_of_le (j := 117) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
   obtain ⟨v1, v2, hv⟩ := hz
-  exact ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+  exact ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
     h_distinct H s _ chars ch fromIndex hspec hm hr (Or.inr ⟨v1, v2, by rw [hv]⟩)
 
-theorem ret_compressed_scalar_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_scalar_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1083,20 +990,20 @@ theorem ret_compressed_scalar_found_after [Host] (slow : Label)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
     (hoff : BitVec.setWidth 32 (t.regs.get64 temp_offset) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 62)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 60)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   sstep
-  refine Program.loopCont_of_le (j := 63) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 61) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 64) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 62) (by rw [h_prog_len]; omega) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -1116,12 +1023,11 @@ theorem ret_compressed_scalar_found_after [Host] (slow : Label)
       · exact hr_out.2.2.2.1 h
       · exact hr_out.2.2.2.2 h)
 
-theorem ret_compressed_avx_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_avx_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1131,11 +1037,11 @@ theorem ret_compressed_avx_found_after [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + (BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 48)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 46)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -, -⟩,
@@ -1146,7 +1052,7 @@ theorem ret_compressed_avx_found_after [Host] (slow : Label)
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
   sstep
-  refine Program.loopCont_of_le (j := 49) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 47) (by rw [h_prog_len]; omega) ?_
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -1154,18 +1060,18 @@ theorem ret_compressed_avx_found_after [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
+  refine Program.loopCont_of_le (j := 48) (by rw [h_prog_len]; omega) ?_
+  sstep
+  refine Program.loopCont_of_le (j := 49) (by rw [h_prog_len]; omega) ?_
+  sstep
   refine Program.loopCont_of_le (j := 50) (by rw [h_prog_len]; omega) ?_
   sstep
   refine Program.loopCont_of_le (j := 51) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
-  sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -1190,12 +1096,11 @@ theorem ret_compressed_avx_found_after [Host] (slow : Label)
       · exact h4 rfl
       · exact h5 rfl)
 
-theorem ret_compressed_tail_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_compressed_tail_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1205,11 +1110,11 @@ theorem ret_compressed_tail_found_after [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + (BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 43)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 41)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -, -⟩,
@@ -1219,7 +1124,7 @@ theorem ret_compressed_tail_found_after [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 43: bsfl temp_mask, %ecx
+  -- Directive 41: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -1227,23 +1132,23 @@ theorem ret_compressed_tail_found_after [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
+  refine Program.loopCont_of_le (j := 42) (by rw [h_prog_len]; omega) ?_
+  -- Directive 42: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 43) (by rw [h_prog_len]; omega) ?_
+  -- Directive 43: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 44) (by rw [h_prog_len]; omega) ?_
-  -- Directive 44: addl %ecx, temp_offset
+  -- Directive 44: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 45) (by rw [h_prog_len]; omega) ?_
-  -- Directive 45: movl temp_offset, out
+  -- Directive 45: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 46) (by rw [h_prog_len]; omega) ?_
-  -- Directive 46: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+  -- Directive 118: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 47) (by rw [h_prog_len]; omega) ?_
-  -- Directive 47: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
-  -- Directive 120: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -1269,12 +1174,11 @@ theorem ret_compressed_tail_found_after [Host] (slow : Label)
       · exact h5 rfl)
 
 
-theorem ret_uncompressed_scalar_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_scalar_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (_h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1283,20 +1187,20 @@ theorem ret_uncompressed_scalar_found_after [Host] (slow : Label)
     (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
     (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
     (hoff : BitVec.setWidth 32 (t.regs.get64 temp_offset) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 113)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 111)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   sstep
-  refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 115) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 113) (by rw [h_prog_len]; omega) ?_
   sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   refine ⟨?_, ?_, hm, hz⟩
@@ -1316,12 +1220,11 @@ theorem ret_uncompressed_scalar_found_after [Host] (slow : Label)
       · exact hr_out.2.2.2.1 h
       · exact hr_out.2.2.2.2 h)
 
-theorem ret_uncompressed_avx_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_avx_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1331,11 +1234,11 @@ theorem ret_uncompressed_avx_found_after [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + ((BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))) >>> 1).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 98)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 96)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -, -⟩,
@@ -1346,7 +1249,7 @@ theorem ret_uncompressed_avx_found_after [Host] (slow : Label)
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
   sstep
-  refine Program.loopCont_of_le (j := 99) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 97) (by rw [h_prog_len]; omega) ?_
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -1354,21 +1257,21 @@ theorem ret_uncompressed_avx_found_after [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
-  refine Program.loopCont_of_le (j := 100) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 98) (by rw [h_prog_len]; omega) ?_
   sstep
   intro _
+  refine Program.loopCont_of_le (j := 99) (by rw [h_prog_len]; omega) ?_
+  sstep
+  refine Program.loopCont_of_le (j := 100) (by rw [h_prog_len]; omega) ?_
+  sstep
   refine Program.loopCont_of_le (j := 101) (by rw [h_prog_len]; omega) ?_
   sstep
   refine Program.loopCont_of_le (j := 102) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
   sstep
-  refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
-  sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -1394,12 +1297,11 @@ theorem ret_uncompressed_avx_found_after [Host] (slow : Label)
       · exact h5 rfl)
 
 
-theorem ret_uncompressed_tail_found_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem ret_uncompressed_tail_found_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
     (s t : MachineData)
     (chars : List (BitVec 16)) (ch fromIndex : BitVec 32)
     (idx : BitVec 32)
@@ -1409,11 +1311,11 @@ theorem ret_uncompressed_tail_found_after [Host] (slow : Label)
     (hz : ∃ v1 v2, t.zmms = (s.zmms.set ymm1 v1).set ymm2 v2)
     (h_mask_ne : BitVec.setWidth 32 (t.regs.get64 temp_mask) ≠ 0#32)
     (h_match_idx : BitVec.setWidth 32 (t.regs.get64 temp_offset + ((BitVec.bsf (BitVec.setWidth 32 (t.regs.get64 temp_mask))) >>> 1).zeroExtend 64) = idx) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 92)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 90)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨-, -, -, -, -, -, -⟩,
@@ -1423,7 +1325,7 @@ theorem ret_uncompressed_tail_found_after [Host] (slow : Label)
           ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
           ⟨hd_len_offset, hd_len_mask⟩,
           hd_offset_mask, -⟩ := hd
-  -- Directive 92: bsfl temp_mask, %ecx
+  -- Directive 90: bsfl temp_mask, %ecx
   sstep
   have h_mask_cond : (BitVec.setWidth 32 (t.regs.get64 temp_mask) == 0#32) = false := by
     simp [h_mask_ne]
@@ -1431,27 +1333,27 @@ theorem ret_uncompressed_tail_found_after [Host] (slow : Label)
   -- CF, PF, AF, SF, and OF are undefined after `bsf`
   intro _ _ _ _ _
   simp only [Effects.All]
-  refine Program.loopCont_of_le (j := 93) (by rw [h_prog_len]; omega) ?_
-  -- Directive 93: shrl $1, %ecx
+  refine Program.loopCont_of_le (j := 91) (by rw [h_prog_len]; omega) ?_
+  -- Directive 91: shrl $1, %ecx
   sstep
   intro _
+  refine Program.loopCont_of_le (j := 92) (by rw [h_prog_len]; omega) ?_
+  -- Directive 92: addl %ecx, temp_offset
+  sstep
+  refine Program.loopCont_of_le (j := 93) (by rw [h_prog_len]; omega) ?_
+  -- Directive 93: movl temp_offset, out
+  sstep
   refine Program.loopCont_of_le (j := 94) (by rw [h_prog_len]; omega) ?_
-  -- Directive 94: addl %ecx, temp_offset
+  -- Directive 94: vzeroupper
   sstep
   refine Program.loopCont_of_le (j := 95) (by rw [h_prog_len]; omega) ?_
-  -- Directive 95: movl temp_offset, out
+  -- Directive 95: jmp done
   sstep
-  refine Program.loopCont_of_le (j := 96) (by rw [h_prog_len]; omega) ?_
-  -- Directive 96: vzeroupper
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
+  refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+  -- Directive 118: .label "done"
   sstep
-  refine Program.loopCont_of_le (j := 97) (by rw [h_prog_len]; omega) ?_
-  -- Directive 97: jmp done
-  sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 120) rfl]
-  refine Program.loopCont_of_le (j := 120) (by rw [h_prog_len]; omega) ?_
-  -- Directive 120: .label "done"
-  sstep
-  refine Program.loopCont_of_le (j := 121) (by rw [h_prog_len]; omega) ?_
+  refine Program.loopCont_of_le (j := 119) (by rw [h_prog_len]; omega) ?_
   refine Program.loop_done ?_
   dsimp [StringIndexOfPost]
   obtain ⟨v1, v2, hv⟩ := hz
@@ -1477,12 +1379,11 @@ theorem ret_uncompressed_tail_found_after [Host] (slow : Label)
       · exact h5 rfl)
 
 
-theorem compressed_scalar_loop_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem compressed_scalar_loop_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm1 ymm2 : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -1507,15 +1408,15 @@ theorem compressed_scalar_loop_lemma [Host] (slow : Label)
       (h_from_k : from_k ≤ k)
       (hpre : ∀ (i : Nat) (hi : i < k - from_k),
         ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+      Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
         (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 50)⟩ := by
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 48)⟩ := by
   intro m
   induction m with
   | zero =>
     intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
+    have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
     have hd := h_distinct
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
     obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -1542,183 +1443,23 @@ theorem compressed_scalar_loop_lemma [Host] (slow : Label)
       rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
       have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
       rw [this]
-    -- Directive 50: .label "compressed_scalar_loop"
+    -- Directive 48: .label "compressed_scalar_loop"
     sstep
-    refine Program.loopCont_of_le (j := 51) (by rw [h_prog_len]; omega) ?_
-    -- Directive 51: movzxb 16(str, temp_offset, 1), temp_mask
+    refine Program.loopCont_of_le (j := 49) (by rw [h_prog_len]; omega) ?_
+    -- Directive 49: movzxb 16(str, temp_offset, 1), temp_mask
     sstep
     simp only [addr_sib1_disp', hstr, h_off]
     rw [← haddr, hload]
     dsimp only []
     rw [byte_of_bytes, h_data k (by omega)]
-    refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 50) (by rw [h_prog_len]; omega) ?_
     have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
       rw [← get_low32, h_search]
-    -- Directive 52: cmpl temp_mask, search_value
+    -- Directive 50: cmpl temp_mask, search_value
     sstep
     simp only [get64_set64, hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
-    -- Directive 53: je compressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 58) rfl]
-      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_compressed_scalar_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
-      -- Directive 54: addq $1, temp_offset
-      sstep
-      refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
-      -- Directive 55: subl $1, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
-      -- Directive 56: jnz compressed_scalar_loop
-      sstep
-      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
-      -- Directive 57: jmp not_found
-      sstep
-      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
-      refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
-            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
-          intro i hi
-          rw [List.length_drop, h_len] at hi
-          simp only [decide_eq_false_iff_not]
-          by_cases hi_lt : i < k - from_k
-          · exact hpre i hi_lt
-          · have hi_eq : i = k - from_k := by omega
-            subst hi_eq
-            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-            rw [this]
-            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-              ext; exact Nat.add_sub_of_le h_from_k
-            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-              congr 1
-            rw [this]
-            exact heq
-        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) h_none
-        rw [h_find]
-      refine ret_not_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
-      intro r hr_out
-      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-      have h1 : r ≠ out := hr_out.1
-      have h2 : r ≠ Reg64.rcx := hr_out.2.1
-      have h3 : r ≠ temp_len := hr_out.2.2.1
-      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-      exact hr r (by
-        intro h_in
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-        rcases h_in with rfl | rfl | rfl | rfl | rfl
-        · exact h1 rfl
-        · exact h2 rfl
-        · exact h3 rfl
-        · exact h4 rfl
-        · exact h5 rfl)
-  | succ m ih =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : k + 1 ≤ T := by omega
-    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
-        some (Int.ofBytes [byteAt s.dmem A k]) := by
-      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
-      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
-      rw [this]
-    -- Directive 50: .label "compressed_scalar_loop"
-    sstep
     refine Program.loopCont_of_le (j := 51) (by rw [h_prog_len]; omega) ?_
-    -- Directive 51: movzxb 16(str, temp_offset, 1), temp_mask
-    sstep
-    simp only [hstr, h_off]
-    rw [← haddr, hload]
-    dsimp only []
-    rw [byte_of_bytes, h_data k (by omega)]
-    refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 52: cmpl temp_mask, search_value
-    sstep
-    simp only [hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
-    -- Directive 53: je compressed_scalar_found
+    -- Directive 51: je compressed_scalar_found
     sstep
     by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
     · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
@@ -1726,209 +1467,9 @@ theorem compressed_scalar_loop_lemma [Host] (slow : Label)
         have := h_chars k (by omega)
         rw [← this]
         exact heq.symm
-      simp only [hzf, addrOf_label hlab (H := H) (i := 58) rfl]
-      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_compressed_scalar_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
-      -- Directive 54: addq $1, temp_offset
-      sstep
-      refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
-      -- Directive 55: subl $1, %ecx
-      sstep
+      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 56) rfl]
       refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
-      -- Directive 56: jnz compressed_scalar_loop
-      sstep
-      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
-        rw [h_rcx]
-        apply beq_eq_false_iff_ne.mpr
-        intro h
-        have := congrArg BitVec.toNat h
-        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-        omega
-      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 50) rfl]
-      refine Program.loopCont_of_le (j := 50) (by rw [h_prog_len]; omega) ?_
-      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
-          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
-        intro i hi
-        by_cases hi_lt : i < k - from_k
-        · exact hpre i hi_lt
-        · have hi_eq : i = k - from_k := by omega
-          subst hi_eq
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h1 : r ≠ out := hr_out.1
-        have h2 : r ≠ Reg64.rcx := hr_out.2.1
-        have h3 : r ≠ temp_len := hr_out.2.2.1
-        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with rfl | rfl | rfl | rfl | rfl
-          · exact h1 rfl
-          · exact h2 rfl
-          · exact h3 rfl
-          · exact h4 rfl
-          · exact h5 rfl)
-      · rw [get_low32]
-        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
-        exact h_search32
-      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
-        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
-      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
-        rw [ofNat_succ_sub_one (m + 1)]
-
-
-theorem compressed_scalar_loop_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
-    (ymm1 ymm2 : AvxReg .W256)
-    (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
-    (s : MachineData)
-    (c : BitVec 32) (d : List UInt8)
-    (A : BitVec 64) (T : Nat)
-    (hA : A = s.regs.get64 str)
-    (hT : T = (c >>> 1).toNat)
-    (h_data : ∀ i < T, byteAt s.dmem A i = d.getD i 0)
-    (h_some : ∀ i < T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
-    (ch : BitVec 32) (h_ch : ch.toNat ≤ 127)
-    (chars : List (BitVec 16))
-    (h_len : chars.length = T)
-    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 = (d.getD i 0).toBitVec.zeroExtend 32)
-    (fromIndex : BitVec 32) (from_k : Nat)
-    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
-    ∀ m k (t : MachineData)
-      (hm : t.dmem = s.dmem)
-      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
-      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
-      (h_search : t.regs.get (.low search_value .W32) = ch)
-      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
-      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
-      (hk : k + (m + 1) = T)
-      (h_from_k : from_k ≤ k)
-      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
-        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
-        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 54)⟩ := by
-  intro m
-  induction m with
-  | zero =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : k + 1 ≤ T := by omega
-    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
-        some (Int.ofBytes [byteAt s.dmem A k]) := by
-      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
-      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
-      rw [this]
-    -- Directive 54: .label "compressed_scalar_loop"
-    sstep
-    refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
-    -- Directive 55: movzxb 16(str, temp_offset, 1), temp_mask
-    sstep
-    simp only [addr_sib1_disp', hstr, h_off]
-    rw [← haddr, hload]
-    dsimp only []
-    rw [byte_of_bytes, h_data k (by omega)]
-    refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 56: cmpl temp_mask, search_value
-    sstep
-    simp only [get64_set64, hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
-    -- Directive 57: je compressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 62) rfl]
-      refine Program.loopCont_of_le (j := 62) (by rw [h_prog_len]; omega) ?_
       have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
         dsimp only [indexOfSpec]
         rw [h_from_eq]
@@ -1950,7 +1491,7 @@ theorem compressed_scalar_loop_lemma_after [Host] (slow : Label)
         dsimp only []
         have : from_k + (k - from_k) = k := by omega
         rw [this]
-      refine ret_compressed_scalar_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+      refine ret_compressed_scalar_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
         h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
       · intro r hr_out
         simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -1975,761 +1516,21 @@ theorem compressed_scalar_loop_lemma_after [Host] (slow : Label)
         rw [h_chars k (by omega)]
         exact h.symm
       simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
-      -- Directive 58: addq $1, temp_offset
+      refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
+      -- Directive 52: addq $1, temp_offset
       sstep
-      refine Program.loopCont_of_le (j := 59) (by rw [h_prog_len]; omega) ?_
-      -- Directive 59: subl $1, %ecx
+      refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
+      -- Directive 53: subl $1, %ecx
       sstep
-      refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
-      -- Directive 60: jnz compressed_scalar_loop
-      sstep
-      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 61) (by rw [h_prog_len]; omega) ?_
-      -- Directive 61: jmp not_found
-      sstep
-      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
-      refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
-            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
-          intro i hi
-          rw [List.length_drop, h_len] at hi
-          simp only [decide_eq_false_iff_not]
-          by_cases hi_lt : i < k - from_k
-          · exact hpre i hi_lt
-          · have hi_eq : i = k - from_k := by omega
-            subst hi_eq
-            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-            rw [this]
-            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-              ext; exact Nat.add_sub_of_le h_from_k
-            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-              congr 1
-            rw [this]
-            exact heq
-        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) h_none
-        rw [h_find]
-      refine ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
-      intro r hr_out
-      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-      have h1 : r ≠ out := hr_out.1
-      have h2 : r ≠ Reg64.rcx := hr_out.2.1
-      have h3 : r ≠ temp_len := hr_out.2.2.1
-      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-      exact hr r (by
-        intro h_in
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-        rcases h_in with rfl | rfl | rfl | rfl | rfl
-        · exact h1 rfl
-        · exact h2 rfl
-        · exact h3 rfl
-        · exact h4 rfl
-        · exact h5 rfl)
-  | succ m ih =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : k + 1 ≤ T := by omega
-    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
-        some (Int.ofBytes [byteAt s.dmem A k]) := by
-      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
-      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
-      rw [this]
-    -- Directive 54: .label "compressed_scalar_loop"
-    sstep
-    refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
-    -- Directive 55: movzxb 16(str, temp_offset, 1), temp_mask
-    sstep
-    simp only [hstr, h_off]
-    rw [← haddr, hload]
-    dsimp only []
-    rw [byte_of_bytes, h_data k (by omega)]
-    refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 56: cmpl temp_mask, search_value
-    sstep
-    simp only [hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
-    -- Directive 57: je compressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, addrOf_label hlab (H := H) (i := 62) rfl]
-      refine Program.loopCont_of_le (j := 62) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_compressed_scalar_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
-      -- Directive 58: addq $1, temp_offset
-      sstep
-      refine Program.loopCont_of_le (j := 59) (by rw [h_prog_len]; omega) ?_
-      -- Directive 59: subl $1, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
-      -- Directive 60: jnz compressed_scalar_loop
-      sstep
-      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
-        rw [h_rcx]
-        apply beq_eq_false_iff_ne.mpr
-        intro h
-        have := congrArg BitVec.toNat h
-        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-        omega
-      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 54) rfl]
       refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
-      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
-          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
-        intro i hi
-        by_cases hi_lt : i < k - from_k
-        · exact hpre i hi_lt
-        · have hi_eq : i = k - from_k := by omega
-          subst hi_eq
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h1 : r ≠ out := hr_out.1
-        have h2 : r ≠ Reg64.rcx := hr_out.2.1
-        have h3 : r ≠ temp_len := hr_out.2.2.1
-        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with rfl | rfl | rfl | rfl | rfl
-          · exact h1 rfl
-          · exact h2 rfl
-          · exact h3 rfl
-          · exact h4 rfl
-          · exact h5 rfl)
-      · rw [get_low32]
-        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
-        exact h_search32
-      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
-        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
-      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
-        rw [ofNat_succ_sub_one (m + 1)]
-
-
-theorem uncompressed_scalar_loop_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
-    (ymm1 ymm2 : AvxReg .W256)
-    (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
-    (s : MachineData)
-    (c : BitVec 32) (d : List UInt8)
-    (A : BitVec 64) (T : Nat)
-    (hA : A = s.regs.get64 str)
-    (hT : T = (c >>> 1).toNat)
-    (h_data : ∀ i < 2 * T, byteAt s.dmem A i = d.getD i 0)
-    (h_some : ∀ i < 2 * T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
-    (ch : BitVec 32) (h_ch : ch.toNat ≤ 65535)
-    (chars : List (BitVec 16))
-    (h_len : chars.length = T)
-    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 =
-      ((d.getD (2 * i) 0).toBitVec.zeroExtend 16 |||
-        ((d.getD (2 * i + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32)
-    (fromIndex : BitVec 32) (from_k : Nat)
-    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
-    ∀ m k (t : MachineData)
-      (hm : t.dmem = s.dmem)
-      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
-      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
-      (h_search : t.regs.get (.low search_value .W32) = ch)
-      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
-      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
-      (hk : k + (m + 1) = T)
-      (h_from_k : from_k ≤ k)
-      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
-        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
-        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 101)⟩ := by
-  intro m
-  induction m with
-  | zero =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
-    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
-        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
-      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
-      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
-          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
-      rw [this]
-    -- Directive 101: .label "uncompressed_scalar_loop"
-    sstep
-    refine Program.loopCont_of_le (j := 102) (by rw [h_prog_len]; omega) ?_
-    -- Directive 102: movzxw 16(str, temp_offset, 2), temp_mask
-    sstep
-    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
-    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
-    rw [this]
-    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
-    rw [h_addr_match, hload]
-    dsimp only []
-    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
-    refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 103: cmpl temp_mask, search_value
-    sstep
-    simp only [get64_set64, hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
-    -- Directive 104: je uncompressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 109) rfl]
-      refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_uncompressed_scalar_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
-      sstep
-      refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
-      -- Directive 106: subl $1, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
-      -- Directive 107: jnz uncompressed_scalar_loop
+      -- Directive 54: jnz compressed_scalar_loop
       sstep
       simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
-      -- Directive 108: jmp not_found
+      refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
+      -- Directive 55: jmp not_found
       sstep
-      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 114) rfl]
-      refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
-            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
-          intro i hi
-          rw [List.length_drop, h_len] at hi
-          simp only [decide_eq_false_iff_not]
-          by_cases hi_lt : i < k - from_k
-          · exact hpre i hi_lt
-          · have hi_eq : i = k - from_k := by omega
-            subst hi_eq
-            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-            rw [this]
-            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-              ext; exact Nat.add_sub_of_le h_from_k
-            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-              congr 1
-            rw [this]
-            exact heq
-        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) h_none
-        rw [h_find]
-      refine ret_not_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
-      intro r hr_out
-      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-      have h1 : r ≠ out := hr_out.1
-      have h2 : r ≠ Reg64.rcx := hr_out.2.1
-      have h3 : r ≠ temp_len := hr_out.2.2.1
-      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-      exact hr r (by
-        intro h_in
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-        rcases h_in with rfl | rfl | rfl | rfl | rfl
-        · exact h1 rfl
-        · exact h2 rfl
-        · exact h3 rfl
-        · exact h4 rfl
-        · exact h5 rfl)
-  | succ m ih =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 117 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
-    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
-        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
-      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
-      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
-          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
-      rw [this]
-    -- Directive 101: .label "uncompressed_scalar_loop"
-    sstep
-    refine Program.loopCont_of_le (j := 102) (by rw [h_prog_len]; omega) ?_
-    -- Directive 102: movzxw 16(str, temp_offset, 2), temp_mask
-    sstep
-    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
-    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
-    rw [this]
-    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
-    rw [h_addr_match, hload]
-    dsimp only []
-    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
-    refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 103: cmpl temp_mask, search_value
-    sstep
-    simp only [hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
-    -- Directive 104: je uncompressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, addrOf_label hlab (H := H) (i := 109) rfl]
-      refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_uncompressed_scalar_found slow str search_value out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
-      -- Directive 105: addq $1, temp_offset
-      sstep
-      refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
-      -- Directive 106: subl $1, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
-      -- Directive 107: jnz uncompressed_scalar_loop
-      sstep
-      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
-        rw [h_rcx]
-        apply beq_eq_false_iff_ne.mpr
-        intro h
-        have := congrArg BitVec.toNat h
-        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
-        omega
-      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 101) rfl]
-      refine Program.loopCont_of_le (j := 101) (by rw [h_prog_len]; omega) ?_
-      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
-          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
-        intro i hi
-        by_cases hi_lt : i < k - from_k
-        · exact hpre i hi_lt
-        · have hi_eq : i = k - from_k := by omega
-          subst hi_eq
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h1 : r ≠ out := hr_out.1
-        have h2 : r ≠ Reg64.rcx := hr_out.2.1
-        have h3 : r ≠ temp_len := hr_out.2.2.1
-        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
-        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with rfl | rfl | rfl | rfl | rfl
-          · exact h1 rfl
-          · exact h2 rfl
-          · exact h3 rfl
-          · exact h4 rfl
-          · exact h5 rfl)
-      · rw [get_low32]
-        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
-        exact h_search32
-      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
-        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
-      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
-        rw [ofNat_succ_sub_one (m + 1)]
-
-
-theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
-    (ymm1 ymm2 : AvxReg .W256)
-    (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
-    (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
-    (s : MachineData)
-    (c : BitVec 32) (d : List UInt8)
-    (A : BitVec 64) (T : Nat)
-    (hA : A = s.regs.get64 str)
-    (hT : T = (c >>> 1).toNat)
-    (h_data : ∀ i < 2 * T, byteAt s.dmem A i = d.getD i 0)
-    (h_some : ∀ i < 2 * T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
-    (ch : BitVec 32) (h_ch : ch.toNat ≤ 65535)
-    (chars : List (BitVec 16))
-    (h_len : chars.length = T)
-    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 =
-      ((d.getD (2 * i) 0).toBitVec.zeroExtend 16 |||
-        ((d.getD (2 * i + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32)
-    (fromIndex : BitVec 32) (from_k : Nat)
-    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
-    ∀ m k (t : MachineData)
-      (hm : t.dmem = s.dmem)
-      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
-      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
-      (h_search : t.regs.get (.low search_value .W32) = ch)
-      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
-      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
-      (hk : k + (m + 1) = T)
-      (h_from_k : from_k ≤ k)
-      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
-        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
-        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 105)⟩ := by
-  intro m
-  induction m with
-  | zero =>
-    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
-    have hd := h_distinct
-    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
-            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
-            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
-            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
-            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
-            ⟨hd_len_offset, hd_len_mask⟩,
-            hd_offset_mask, -⟩ := hd
-    have hstr : t.regs.get64 str = A := by
-      rw [hA]
-      exact hr str (by
-        intro h
-        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
-        rcases h with rfl | rfl | rfl | rfl | rfl
-        · exact hd_str_out rfl
-        · exact hd_str_rcx rfl
-        · exact hd_str_len rfl
-        · exact hd_str_offset rfl
-        · exact hd_str_mask rfl)
-    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
-    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
-    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
-        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
-      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
-      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
-          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
-      rw [this]
-    -- Directive 105: .label "uncompressed_scalar_loop"
-    sstep
-    refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
-    -- Directive 106: movzxw 16(str, temp_offset, 2), temp_mask
-    sstep
-    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
-    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
-    rw [this]
-    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
-    rw [h_addr_match, hload]
-    dsimp only []
-    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
-    refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
-    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
-      rw [← get_low32, h_search]
-    -- Directive 107: cmpl temp_mask, search_value
-    sstep
-    simp only [get64_set64, hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
-    -- Directive 108: je uncompressed_scalar_found
-    sstep
-    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
-        rw [h_search32, sub_beq_zero, beq_iff_eq]
-        have := h_chars k (by omega)
-        rw [← this]
-        exact heq.symm
-      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 113) rfl]
-      refine Program.loopCont_of_le (j := 113) (by rw [h_prog_len]; omega) ?_
-      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
-        dsimp only [indexOfSpec]
-        rw [h_from_eq]
-        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
-          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
-              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
-          rw [this]
-          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
-            ext; exact Nat.add_sub_of_le h_from_k
-          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
-            congr 1
-          rw [this]
-          exact heq
-        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
-          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
-          (by simp only [decide_eq_true_iff, h_char_k])
-          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
-        rw [h_find]
-        dsimp only []
-        have : from_k + (k - from_k) = k := by omega
-        rw [this]
-      refine ret_uncompressed_scalar_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
-        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
-      · intro r hr_out
-        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
-        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
-        simp only [get64_set64, h_mask, ↓reduceIte]
-        exact hr r (by
-          intro h_in
-          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
-          rcases h_in with h | h | h | h | h
-          · exact hr_out.1 h
-          · exact hr_out.2.1 h
-          · exact hr_out.2.2.1 h
-          · exact hr_out.2.2.2.1 h
-          · exact hr_out.2.2.2.2 h)
-      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
-        apply BitVec.eq_of_toNat_eq
-        simp
-    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
-          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
-        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
-        intro h
-        apply heq
-        rw [h_chars k (by omega)]
-        exact h.symm
-      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
-      sstep
-      refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
-      -- Directive 110: subl $1, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 111) (by rw [h_prog_len]; omega) ?_
-      -- Directive 111: jnz uncompressed_scalar_loop
-      sstep
-      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
+      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 112) rfl]
       refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
-      -- Directive 112: jmp not_found
-      sstep
-      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 118) rfl]
-      refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
       have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
         dsimp only [indexOfSpec]
         rw [h_from_eq]
@@ -2754,7 +1555,7 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
           (chars.drop from_k) h_none
         rw [h_find]
-      refine ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+      refine ret_not_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
         h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
       intro r hr_out
       simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -2775,7 +1576,938 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         · exact h5 rfl)
   | succ m ih =>
     intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
-    have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 121 := rfl
+    have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : k + 1 ≤ T := by omega
+    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
+        some (Int.ofBytes [byteAt s.dmem A k]) := by
+      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
+      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
+      rw [this]
+    -- Directive 48: .label "compressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 49) (by rw [h_prog_len]; omega) ?_
+    -- Directive 49: movzxb 16(str, temp_offset, 1), temp_mask
+    sstep
+    simp only [hstr, h_off]
+    rw [← haddr, hload]
+    dsimp only []
+    rw [byte_of_bytes, h_data k (by omega)]
+    refine Program.loopCont_of_le (j := 50) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 50: cmpl temp_mask, search_value
+    sstep
+    simp only [hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 51) (by rw [h_prog_len]; omega) ?_
+    -- Directive 51: je compressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, addrOf_label hlab (H := H) (i := 56) rfl]
+      refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_compressed_scalar_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
+      -- Directive 52: addq $1, temp_offset
+      sstep
+      refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
+      -- Directive 53: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
+      -- Directive 54: jnz compressed_scalar_loop
+      sstep
+      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
+        rw [h_rcx]
+        apply beq_eq_false_iff_ne.mpr
+        intro h
+        have := congrArg BitVec.toNat h
+        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
+        omega
+      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 48) rfl]
+      refine Program.loopCont_of_le (j := 48) (by rw [h_prog_len]; omega) ?_
+      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
+          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
+        intro i hi
+        by_cases hi_lt : i < k - from_k
+        · exact hpre i hi_lt
+        · have hi_eq : i = k - from_k := by omega
+          subst hi_eq
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h1 : r ≠ out := hr_out.1
+        have h2 : r ≠ Reg64.rcx := hr_out.2.1
+        have h3 : r ≠ temp_len := hr_out.2.2.1
+        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with rfl | rfl | rfl | rfl | rfl
+          · exact h1 rfl
+          · exact h2 rfl
+          · exact h3 rfl
+          · exact h4 rfl
+          · exact h5 rfl)
+      · rw [get_low32]
+        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
+        exact h_search32
+      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
+        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
+      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
+        rw [ofNat_succ_sub_one (m + 1)]
+
+
+theorem compressed_scalar_loop_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+    (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
+    (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (s : MachineData)
+    (c : BitVec 32) (d : List UInt8)
+    (A : BitVec 64) (T : Nat)
+    (hA : A = s.regs.get64 str)
+    (hT : T = (c >>> 1).toNat)
+    (h_data : ∀ i < T, byteAt s.dmem A i = d.getD i 0)
+    (h_some : ∀ i < T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
+    (ch : BitVec 32) (h_ch : ch.toNat ≤ 127)
+    (chars : List (BitVec 16))
+    (h_len : chars.length = T)
+    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 = (d.getD i 0).toBitVec.zeroExtend 32)
+    (fromIndex : BitVec 32) (from_k : Nat)
+    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
+    ∀ m k (t : MachineData)
+      (hm : t.dmem = s.dmem)
+      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
+      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
+      (h_search : t.regs.get (.low search_value .W32) = ch)
+      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
+      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
+      (hk : k + (m + 1) = T)
+      (h_from_k : from_k ≤ k)
+      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
+        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
+      Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 52)⟩ := by
+  intro m
+  induction m with
+  | zero =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : k + 1 ≤ T := by omega
+    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
+        some (Int.ofBytes [byteAt s.dmem A k]) := by
+      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
+      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
+      rw [this]
+    -- Directive 52: .label "compressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
+    -- Directive 53: movzxb 16(str, temp_offset, 1), temp_mask
+    sstep
+    simp only [addr_sib1_disp', hstr, h_off]
+    rw [← haddr, hload]
+    dsimp only []
+    rw [byte_of_bytes, h_data k (by omega)]
+    refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 54: cmpl temp_mask, search_value
+    sstep
+    simp only [get64_set64, hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
+    -- Directive 55: je compressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 60) rfl]
+      refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_compressed_scalar_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
+      -- Directive 56: addq $1, temp_offset
+      sstep
+      refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
+      -- Directive 57: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
+      -- Directive 58: jnz compressed_scalar_loop
+      sstep
+      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 59) (by rw [h_prog_len]; omega) ?_
+      -- Directive 59: jmp not_found
+      sstep
+      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
+      refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
+            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
+          intro i hi
+          rw [List.length_drop, h_len] at hi
+          simp only [decide_eq_false_iff_not]
+          by_cases hi_lt : i < k - from_k
+          · exact hpre i hi_lt
+          · have hi_eq : i = k - from_k := by omega
+            subst hi_eq
+            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+            rw [this]
+            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+              ext; exact Nat.add_sub_of_le h_from_k
+            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+              congr 1
+            rw [this]
+            exact heq
+        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) h_none
+        rw [h_find]
+      refine ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
+      intro r hr_out
+      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+      have h1 : r ≠ out := hr_out.1
+      have h2 : r ≠ Reg64.rcx := hr_out.2.1
+      have h3 : r ≠ temp_len := hr_out.2.2.1
+      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+      exact hr r (by
+        intro h_in
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+        rcases h_in with rfl | rfl | rfl | rfl | rfl
+        · exact h1 rfl
+        · exact h2 rfl
+        · exact h3 rfl
+        · exact h4 rfl
+        · exact h5 rfl)
+  | succ m ih =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : k + 1 ≤ T := by omega
+    have haddr : A + 16#64 + .ofNat 64 k = A + .ofNat 64 k + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 k) 1 =
+        some (Int.ofBytes [byteAt s.dmem A k]) := by
+      rw [haddr, hm, load_chunk _ _ k 1 T h_some (by omega)]
+      have : (List.range 1).map (fun j => byteAt s.dmem A (k + j)) = [byteAt s.dmem A k] := rfl
+      rw [this]
+    -- Directive 52: .label "compressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 53) (by rw [h_prog_len]; omega) ?_
+    -- Directive 53: movzxb 16(str, temp_offset, 1), temp_mask
+    sstep
+    simp only [hstr, h_off]
+    rw [← haddr, hload]
+    dsimp only []
+    rw [byte_of_bytes, h_data k (by omega)]
+    refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 54: cmpl temp_mask, search_value
+    sstep
+    simp only [hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 55) (by rw [h_prog_len]; omega) ?_
+    -- Directive 55: je compressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, addrOf_label hlab (H := H) (i := 60) rfl]
+      refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_compressed_scalar_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) - (d.getD k 0).toBitVec.zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 56) (by rw [h_prog_len]; omega) ?_
+      -- Directive 56: addq $1, temp_offset
+      sstep
+      refine Program.loopCont_of_le (j := 57) (by rw [h_prog_len]; omega) ?_
+      -- Directive 57: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 58) (by rw [h_prog_len]; omega) ?_
+      -- Directive 58: jnz compressed_scalar_loop
+      sstep
+      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
+        rw [h_rcx]
+        apply beq_eq_false_iff_ne.mpr
+        intro h
+        have := congrArg BitVec.toNat h
+        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
+        omega
+      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 52) rfl]
+      refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
+      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
+          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
+        intro i hi
+        by_cases hi_lt : i < k - from_k
+        · exact hpre i hi_lt
+        · have hi_eq : i = k - from_k := by omega
+          subst hi_eq
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h1 : r ≠ out := hr_out.1
+        have h2 : r ≠ Reg64.rcx := hr_out.2.1
+        have h3 : r ≠ temp_len := hr_out.2.2.1
+        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with rfl | rfl | rfl | rfl | rfl
+          · exact h1 rfl
+          · exact h2 rfl
+          · exact h3 rfl
+          · exact h4 rfl
+          · exact h5 rfl)
+      · rw [get_low32]
+        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
+        exact h_search32
+      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
+        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
+      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
+        rw [ofNat_succ_sub_one (m + 1)]
+
+
+theorem uncompressed_scalar_loop_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
+    (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
+    (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2))
+    (s : MachineData)
+    (c : BitVec 32) (d : List UInt8)
+    (A : BitVec 64) (T : Nat)
+    (hA : A = s.regs.get64 str)
+    (hT : T = (c >>> 1).toNat)
+    (h_data : ∀ i < 2 * T, byteAt s.dmem A i = d.getD i 0)
+    (h_some : ∀ i < 2 * T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
+    (ch : BitVec 32) (h_ch : ch.toNat ≤ 65535)
+    (chars : List (BitVec 16))
+    (h_len : chars.length = T)
+    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 =
+      ((d.getD (2 * i) 0).toBitVec.zeroExtend 16 |||
+        ((d.getD (2 * i + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32)
+    (fromIndex : BitVec 32) (from_k : Nat)
+    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
+    ∀ m k (t : MachineData)
+      (hm : t.dmem = s.dmem)
+      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
+      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
+      (h_search : t.regs.get (.low search_value .W32) = ch)
+      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
+      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
+      (hk : k + (m + 1) = T)
+      (h_from_k : from_k ≤ k)
+      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
+        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
+      Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2) H
+        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 99)⟩ := by
+  intro m
+  induction m with
+  | zero =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
+    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
+        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
+      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
+      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
+          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
+      rw [this]
+    -- Directive 99: .label "uncompressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 100) (by rw [h_prog_len]; omega) ?_
+    -- Directive 100: movzxw 16(str, temp_offset, 2), temp_mask
+    sstep
+    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
+    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
+    rw [this]
+    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
+    rw [h_addr_match, hload]
+    dsimp only []
+    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
+    refine Program.loopCont_of_le (j := 101) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 101: cmpl temp_mask, search_value
+    sstep
+    simp only [get64_set64, hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 102) (by rw [h_prog_len]; omega) ?_
+    -- Directive 102: je uncompressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 107) rfl]
+      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_uncompressed_scalar_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
+      sstep
+      refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
+      -- Directive 104: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
+      -- Directive 105: jnz uncompressed_scalar_loop
+      sstep
+      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
+      -- Directive 106: jmp not_found
+      sstep
+      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 112) rfl]
+      refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
+            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
+          intro i hi
+          rw [List.length_drop, h_len] at hi
+          simp only [decide_eq_false_iff_not]
+          by_cases hi_lt : i < k - from_k
+          · exact hpre i hi_lt
+          · have hi_eq : i = k - from_k := by omega
+            subst hi_eq
+            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+            rw [this]
+            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+              ext; exact Nat.add_sub_of_le h_from_k
+            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+              congr 1
+            rw [this]
+            exact heq
+        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) h_none
+        rw [h_find]
+      refine ret_not_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
+      intro r hr_out
+      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+      have h1 : r ≠ out := hr_out.1
+      have h2 : r ≠ Reg64.rcx := hr_out.2.1
+      have h3 : r ≠ temp_len := hr_out.2.2.1
+      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+      exact hr r (by
+        intro h_in
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+        rcases h_in with rfl | rfl | rfl | rfl | rfl
+        · exact h1 rfl
+        · exact h2 rfl
+        · exact h3 rfl
+        · exact h4 rfl
+        · exact h5 rfl)
+  | succ m ih =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm1 ymm2).length = 115 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
+    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
+        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
+      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
+      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
+          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
+      rw [this]
+    -- Directive 99: .label "uncompressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 100) (by rw [h_prog_len]; omega) ?_
+    -- Directive 100: movzxw 16(str, temp_offset, 2), temp_mask
+    sstep
+    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
+    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
+    rw [this]
+    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
+    rw [h_addr_match, hload]
+    dsimp only []
+    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
+    refine Program.loopCont_of_le (j := 101) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 101: cmpl temp_mask, search_value
+    sstep
+    simp only [hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 102) (by rw [h_prog_len]; omega) ?_
+    -- Directive 102: je uncompressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, addrOf_label hlab (H := H) (i := 107) rfl]
+      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_uncompressed_scalar_found str search_value out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
+      -- Directive 103: addq $1, temp_offset
+      sstep
+      refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
+      -- Directive 104: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
+      -- Directive 105: jnz uncompressed_scalar_loop
+      sstep
+      have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
+        rw [h_rcx]
+        apply beq_eq_false_iff_ne.mpr
+        intro h
+        have := congrArg BitVec.toNat h
+        simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
+        omega
+      simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 99) rfl]
+      refine Program.loopCont_of_le (j := 99) (by rw [h_prog_len]; omega) ?_
+      have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
+          ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
+        intro i hi
+        by_cases hi_lt : i < k - from_k
+        · exact hpre i hi_lt
+        · have hi_eq : i = k - from_k := by omega
+          subst hi_eq
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+      refine ih (k + 1) _ hm ?_ hz ?_ ?_ ?_ (by omega) (by omega) hpre_step
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h1 : r ≠ out := hr_out.1
+        have h2 : r ≠ Reg64.rcx := hr_out.2.1
+        have h3 : r ≠ temp_len := hr_out.2.2.1
+        have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+        have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with rfl | rfl | rfl | rfl | rfl
+          · exact h1 rfl
+          · exact h2 rfl
+          · exact h3 rfl
+          · exact h4 rfl
+          · exact h5 rfl)
+      · rw [get_low32]
+        simp only [get64_set64, hd_search_rcx, hd_search_offset, hd_search_mask, ↓reduceIte]
+        exact h_search32
+      · simp only [get64_set64, Ne.symm hd_rcx_offset, hd_offset_mask, ↓reduceIte, h_off]
+        rw [show (1#64 : BitVec 64) = BitVec.ofNat 64 1 by rfl, ofNat_add_lit]
+      · simp only [get64_set64, sw32_64, ↓reduceIte, h_rcx]
+        rw [ofNat_succ_sub_one (m + 1)]
+
+
+theorem uncompressed_scalar_loop_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+    (ymm1 ymm2 : AvxReg .W256)
+    (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
+    (hlab : LabelsPlaced)
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2))
+    (s : MachineData)
+    (c : BitVec 32) (d : List UInt8)
+    (A : BitVec 64) (T : Nat)
+    (hA : A = s.regs.get64 str)
+    (hT : T = (c >>> 1).toNat)
+    (h_data : ∀ i < 2 * T, byteAt s.dmem A i = d.getD i 0)
+    (h_some : ∀ i < 2 * T, (s.dmem[A + 16#64 + .ofNat 64 i]?).isSome)
+    (ch : BitVec 32) (h_ch : ch.toNat ≤ 65535)
+    (chars : List (BitVec 16))
+    (h_len : chars.length = T)
+    (h_chars : ∀ (i : Nat) (hi : i < T), (chars.get ⟨i, by omega⟩).zeroExtend 32 =
+      ((d.getD (2 * i) 0).toBitVec.zeroExtend 16 |||
+        ((d.getD (2 * i + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32)
+    (fromIndex : BitVec 32) (from_k : Nat)
+    (h_from_eq : (if fromIndex.slt 0 then 0 else fromIndex.toNat) = from_k) :
+    ∀ m k (t : MachineData)
+      (hm : t.dmem = s.dmem)
+      (hr : ∀ r, r ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] → t.regs.get64 r = s.regs.get64 r)
+      (hz : t.zmms = s.zmms ∨ ∃ v1 v2, t.zmms = ((s.zmms.set ymm1 v1).set ymm2 v2).zeroUpper)
+      (h_search : t.regs.get (.low search_value .W32) = ch)
+      (h_off : t.regs.get64 temp_offset = .ofNat 64 k)
+      (h_rcx : (t.regs.get64 Reg64.rcx).setWidth 32 = .ofNat 32 (m + 1))
+      (hk : k + (m + 1) = T)
+      (h_from_k : from_k ≤ k)
+      (hpre : ∀ (i : Nat) (hi : i < k - from_k),
+        ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
+      Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2) H
+        (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm1 ymm2 chars ch fromIndex s)
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 103)⟩ := by
+  intro m
+  induction m with
+  | zero =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
     have hd := h_distinct
     simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
     obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -2804,10 +2536,10 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
       have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
           [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
       rw [this]
-    -- Directive 105: .label "uncompressed_scalar_loop"
+    -- Directive 103: .label "uncompressed_scalar_loop"
     sstep
-    refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
-    -- Directive 106: movzxw 16(str, temp_offset, 2), temp_mask
+    refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
+    -- Directive 104: movzxw 16(str, temp_offset, 2), temp_mask
     sstep
     simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
     have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
@@ -2816,14 +2548,14 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
     rw [h_addr_match, hload]
     dsimp only []
     rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
-    refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
     have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
       rw [← get_low32, h_search]
-    -- Directive 107: cmpl temp_mask, search_value
+    -- Directive 105: cmpl temp_mask, search_value
     sstep
-    simp only [hd_search_mask, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
-    -- Directive 108: je uncompressed_scalar_found
+    simp only [get64_set64, hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
+    -- Directive 106: je uncompressed_scalar_found
     sstep
     by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
     · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
@@ -2832,8 +2564,9 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         have := h_chars k (by omega)
         rw [← this]
         exact heq.symm
-      simp only [hzf, addrOf_label hlab (H := H) (i := 113) rfl]
-      refine Program.loopCont_of_le (j := 113) (by rw [h_prog_len]; omega) ?_
+      simp only [hzf, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 111) rfl]
+      refine Program.loopCont_of_le (j := 111) (by rw [h_prog_len]; omega) ?_
       have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
         dsimp only [indexOfSpec]
         rw [h_from_eq]
@@ -2855,7 +2588,7 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         dsimp only []
         have : from_k + (k - from_k) = k := by omega
         rw [this]
-      refine ret_uncompressed_scalar_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+      refine ret_uncompressed_scalar_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
         h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
       · intro r hr_out
         simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -2881,14 +2614,179 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         rw [h_chars k (by omega)]
         exact h.symm
       simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
+      sstep
+      refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
+      -- Directive 108: subl $1, %ecx
+      sstep
       refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
-      -- Directive 109: addq $1, temp_offset
+      -- Directive 109: jnz uncompressed_scalar_loop
       sstep
+      simp only [get64_set64, hd_rcx_offset, hd_rcx_mask, h_rcx, ↓reduceIte]
       refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
-      -- Directive 110: subl $1, %ecx
+      -- Directive 110: jmp not_found
       sstep
+      simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 116) rfl]
+      refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
+      have hspec : indexOfSpec chars ch fromIndex = -1#32 := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_none : ∀ (i : Nat) (hi : i < (chars.drop from_k).length),
+            decide (((chars.drop from_k).get ⟨i, hi⟩).zeroExtend 32 = ch) = false := by
+          intro i hi
+          rw [List.length_drop, h_len] at hi
+          simp only [decide_eq_false_iff_not]
+          by_cases hi_lt : i < k - from_k
+          · exact hpre i hi_lt
+          · have hi_eq : i = k - from_k := by omega
+            subst hi_eq
+            have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+                chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+            rw [this]
+            have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+              ext; exact Nat.add_sub_of_le h_from_k
+            have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+              congr 1
+            rw [this]
+            exact heq
+        have h_find := findIdx?_eq_none (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) h_none
+        rw [h_find]
+      refine ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct H s _ chars ch fromIndex hspec hm ?_ hz
+      intro r hr_out
+      simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+      have h1 : r ≠ out := hr_out.1
+      have h2 : r ≠ Reg64.rcx := hr_out.2.1
+      have h3 : r ≠ temp_len := hr_out.2.2.1
+      have h4 : r ≠ temp_offset := hr_out.2.2.2.1
+      have h5 : r ≠ temp_mask := hr_out.2.2.2.2
+      simp only [get64_set64, h2, h4, h5, ↓reduceIte]
+      exact hr r (by
+        intro h_in
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+        rcases h_in with rfl | rfl | rfl | rfl | rfl
+        · exact h1 rfl
+        · exact h2 rfl
+        · exact h3 rfl
+        · exact h4 rfl
+        · exact h5 rfl)
+  | succ m ih =>
+    intro k t hm hr hz h_search h_off h_rcx hk h_from_k hpre
+    have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2).length = 119 := rfl
+    have hd := h_distinct
+    simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+    obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
+            ⟨hd_search_start, hd_search_out, hd_search_rcx, hd_search_len, hd_search_offset, hd_search_mask⟩,
+            ⟨hd_start_out, hd_start_rcx, hd_start_len, hd_start_offset, hd_start_mask⟩,
+            ⟨hd_out_rcx, hd_out_len, hd_out_offset, hd_out_mask⟩,
+            ⟨hd_rcx_len, hd_rcx_offset, hd_rcx_mask⟩,
+            ⟨hd_len_offset, hd_len_mask⟩,
+            hd_offset_mask, -⟩ := hd
+    have hstr : t.regs.get64 str = A := by
+      rw [hA]
+      exact hr str (by
+        intro h
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+        rcases h with rfl | rfl | rfl | rfl | rfl
+        · exact hd_str_out rfl
+        · exact hd_str_rcx rfl
+        · exact hd_str_len rfl
+        · exact hd_str_offset rfl
+        · exact hd_str_mask rfl)
+    have hk_lt : 2 * k + 2 ≤ 2 * T := by omega
+    have haddr : A + 16#64 + .ofNat 64 (2 * k) = A + .ofNat 64 (2 * k) + 16#64 := by ac_rfl
+    have hload : t.dmem.loadInt (A + 16#64 + .ofNat 64 (2 * k)) 2 =
+        some (Int.ofBytes [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)]) := by
+      rw [haddr, hm, load_chunk _ _ (2 * k) 2 (2 * T) h_some (by omega)]
+      have : (List.range 2).map (fun j => byteAt s.dmem A (2 * k + j)) =
+          [byteAt s.dmem A (2 * k), byteAt s.dmem A (2 * k + 1)] := rfl
+      rw [this]
+    -- Directive 103: .label "uncompressed_scalar_loop"
+    sstep
+    refine Program.loopCont_of_le (j := 104) (by rw [h_prog_len]; omega) ?_
+    -- Directive 104: movzxw 16(str, temp_offset, 2), temp_mask
+    sstep
+    simp only [addr_sib2_disp', ofInt_signed_mul2, ofNat_mul2, hstr, h_off]
+    have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
+    rw [this]
+    have h_addr_match : A + BitVec.ofNat 64 (2 * k) + 16#64 = A + 16#64 + BitVec.ofNat 64 (2 * k) := by ac_rfl
+    rw [h_addr_match, hload]
+    dsimp only []
+    rw [word_of_bytes, h_data (2 * k) (by omega), h_data (2 * k + 1) (by omega)]
+    refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
+    have h_search32 : BitVec.setWidth 32 (t.regs.get64 search_value) = ch := by
+      rw [← get_low32, h_search]
+    -- Directive 105: cmpl temp_mask, search_value
+    sstep
+    simp only [hd_search_mask, ↓reduceIte]
+    refine Program.loopCont_of_le (j := 106) (by rw [h_prog_len]; omega) ?_
+    -- Directive 106: je uncompressed_scalar_found
+    sstep
+    by_cases heq : (chars.get ⟨k, by omega⟩).zeroExtend 32 = ch
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = true := by
+        rw [h_search32, sub_beq_zero, beq_iff_eq]
+        have := h_chars k (by omega)
+        rw [← this]
+        exact heq.symm
+      simp only [hzf, addrOf_label hlab (H := H) (i := 111) rfl]
       refine Program.loopCont_of_le (j := 111) (by rw [h_prog_len]; omega) ?_
-      -- Directive 111: jnz uncompressed_scalar_loop
+      have hspec : indexOfSpec chars ch fromIndex = BitVec.ofNat 32 k := by
+        dsimp only [indexOfSpec]
+        rw [h_from_eq]
+        have h_char_k : ((chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 = ch := by
+          have : (chars.drop from_k).get ⟨k - from_k, by rw [List.length_drop, h_len]; omega⟩ =
+              chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ := List.getElem_drop
+          rw [this]
+          have h_fin : (⟨from_k + (k - from_k), by rw [h_len]; omega⟩ : Fin chars.length) = ⟨k, by rw [h_len]; omega⟩ := by
+            ext; exact Nat.add_sub_of_le h_from_k
+          have : chars.get ⟨from_k + (k - from_k), by rw [h_len]; omega⟩ = chars.get ⟨k, by rw [h_len]; omega⟩ := by
+            congr 1
+          rw [this]
+          exact heq
+        have h_find := findIdx?_eq_some (fun c => decide (c.zeroExtend 32 = ch))
+          (chars.drop from_k) (k - from_k) (by rw [List.length_drop, h_len]; omega)
+          (by simp only [decide_eq_true_iff, h_char_k])
+          (by intro i hi; simp only [decide_eq_false_iff_not]; exact hpre i hi)
+        rw [h_find]
+        dsimp only []
+        have : from_k + (k - from_k) = k := by omega
+        rw [this]
+      refine ret_uncompressed_scalar_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm1 ymm2
+        h_distinct hlab H s _ chars ch fromIndex (BitVec.ofNat 32 k) hspec hm ?_ hz ?_
+      · intro r hr_out
+        simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
+        have h_mask : r ≠ temp_mask := hr_out.2.2.2.2
+        simp only [get64_set64, h_mask, ↓reduceIte]
+        exact hr r (by
+          intro h_in
+          simp only [List.mem_cons, List.not_mem_nil, or_false] at h_in
+          rcases h_in with h | h | h | h | h
+          · exact hr_out.1 h
+          · exact hr_out.2.1 h
+          · exact hr_out.2.2.1 h
+          · exact hr_out.2.2.2.1 h
+          · exact hr_out.2.2.2.2 h)
+      · simp only [get64_set64, hd_offset_mask, ↓reduceIte, h_off]
+        apply BitVec.eq_of_toNat_eq
+        simp
+    · have hzf : (BitVec.setWidth 32 (t.regs.get64 search_value) -
+          ((d.getD (2 * k) 0).toBitVec.zeroExtend 16 ||| ((d.getD (2 * k + 1) 0).toBitVec.zeroExtend 16 <<< 8)).zeroExtend 32 == 0#32) = false := by
+        rw [h_search32, sub_beq_zero, beq_eq_false_iff_ne]
+        intro h
+        apply heq
+        rw [h_chars k (by omega)]
+        exact h.symm
+      simp only [hzf, Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 107) (by rw [h_prog_len]; omega) ?_
+      -- Directive 107: addq $1, temp_offset
+      sstep
+      refine Program.loopCont_of_le (j := 108) (by rw [h_prog_len]; omega) ?_
+      -- Directive 108: subl $1, %ecx
+      sstep
+      refine Program.loopCont_of_le (j := 109) (by rw [h_prog_len]; omega) ?_
+      -- Directive 109: jnz uncompressed_scalar_loop
       sstep
       have hzf_sub : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) - 1#32 == 0#32) = false := by
         rw [h_rcx]
@@ -2898,8 +2796,8 @@ theorem uncompressed_scalar_loop_lemma_after [Host] (slow : Label)
         simp only [BitVec.toNat_sub, BitVec.toNat_ofNat] at this
         omega
       simp only [hd_rcx_offset, hd_rcx_mask, hzf_sub, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 105) rfl]
-      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
+        addrOf_label hlab (H := H) (i := 103) rfl]
+      refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
       have hpre_step : ∀ (i : Nat) (hi : i < k + 1 - from_k),
           ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch := by
         intro i hi
@@ -3837,12 +3735,11 @@ theorem zmms_set_set_of_ne (z : RegZmms) (ymm1 ymm2 : AvxReg .W256) (v1 v2 : Bit
   have h_ne : r1 ≠ r2 := by intro heq; subst heq; contradiction
   exact zmms_set_comm z r1 r2 v1 v2 h_ne
 
-theorem compressed_tail_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem compressed_tail_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -3869,11 +3766,11 @@ theorem compressed_tail_lemma [Host] (slow : Label)
     (hpre : ∀ (i : Nat) (hi : i < T - r_left - from_k),
       ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch)
     (h_target : t.zmms.get ymm_target = BitVec.broadcastb 256 (BitVec.setWidth 8 ch)) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 29)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 27)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -3893,14 +3790,14 @@ theorem compressed_tail_lemma [Host] (slow : Label)
       · exact hd_str_len rfl
       · exact hd_str_offset rfl
       · exact hd_str_mask rfl)
-  -- Directive 29: .label compressed_tail
+  -- Directive 27: .label compressed_tail
   sstep
-  refine Program.loopCont_of_le (j := 30) (by rw [h_prog_len]; omega) ?_
-  -- Directive 30: testl %ecx, %ecx
+  refine Program.loopCont_of_le (j := 28) (by rw [h_prog_len]; omega) ?_
+  -- Directive 28: testl %ecx, %ecx
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 31) (by rw [h_prog_len]; omega) ?_
-  -- Directive 31: je not_found_vzero
+  refine Program.loopCont_of_le (j := 29) (by rw [h_prog_len]; omega) ?_
+  -- Directive 29: je not_found_vzero
   sstep
   have h_and_self : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) &&& BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) =
       (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) := by simp [BitVec.and_self]
@@ -3908,10 +3805,10 @@ theorem compressed_tail_lemma [Host] (slow : Label)
   by_cases hr0 : r_left = 0
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = true := by
       rw [h_rcx, hr0]; rfl
-    simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-    refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
+    simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+    refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
     have hspec := indexOfSpec_tail_not_found from_k T r_left h_from_eq h_len hpre hr0
-    exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ chars ch fromIndex hspec hm hr hz
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = false := by
       rw [h_rcx]
@@ -3924,7 +3821,7 @@ theorem compressed_tail_lemma [Host] (slow : Label)
         exact hr0 this
       exact this
     simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 30) (by rw [h_prog_len]; omega) ?_
     have haddr_tail : t.regs.get64 str + t.regs.get64 temp_len + -16#64 = A + .ofNat 64 (T - 32) + 16#64 := by
       rw [hstr, h_len_reg]
       have : (BitVec.ofNat 64 T : BitVec 64) = BitVec.ofNat 64 (T - 32) + 32#64 := by
@@ -3940,13 +3837,13 @@ theorem compressed_tail_lemma [Host] (slow : Label)
     sstep
     rw [hload]
     dsimp only []
+    refine Program.loopCont_of_le (j := 31) (by rw [h_prog_len]; omega) ?_
+    sstep
+    refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
+    sstep
     refine Program.loopCont_of_le (j := 33) (by rw [h_prog_len]; omega) ?_
     sstep
     refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
-    sstep
-    refine Program.loopCont_of_le (j := 35) (by rw [h_prog_len]; omega) ?_
-    sstep
-    refine Program.loopCont_of_le (j := 36) (by rw [h_prog_len]; omega) ?_
     sstep
     have h_set_rcx : ∀ (regs : Reg64s) (v : BitVec 64), (regs.set64 Reg64.rcx v).rcx = UInt64.ofBitVec v := fun _ _ => rfl
     simp only [h_set_rcx, UInt64.toBitVec_ofBitVec]
@@ -3979,18 +3876,18 @@ theorem compressed_tail_lemma [Host] (slow : Label)
     by_cases h_one : ((BitVec.extractLsb' 0 8
           (BitVec.setWidth 64 (32#32 + -BitVec.setWidth 32 (t.regs.get64 Reg64.rcx)))).toNat &&& 31 == 1) = true
     · simp only [h_one, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 37) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 35) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 38) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 36) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-        refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+        refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (compressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre (by exact hzf)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4012,7 +3909,7 @@ theorem compressed_tail_lemma [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 37) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := BitVec.bsf shifted_mask
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -4020,7 +3917,7 @@ theorem compressed_tail_lemma [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_compressed_tail_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_compressed_tail_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (compressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4047,18 +3944,18 @@ theorem compressed_tail_lemma [Host] (slow : Label)
             rfl)
     · simp only [h_one, Bool.false_eq_true, ↓reduceIte]
       intro of
-      refine Program.loopCont_of_le (j := 37) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 35) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 38) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 36) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-        refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+        refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (compressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre (by exact hzf)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4080,7 +3977,7 @@ theorem compressed_tail_lemma [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 37) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := BitVec.bsf shifted_mask
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -4088,7 +3985,7 @@ theorem compressed_tail_lemma [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_compressed_tail_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_compressed_tail_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (compressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4115,12 +4012,11 @@ theorem compressed_tail_lemma [Host] (slow : Label)
             rfl)
 
 
-theorem compressed_tail_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem compressed_tail_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -4147,11 +4043,11 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
     (hpre : ∀ (i : Nat) (hi : i < T - r_left - from_k),
       ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch)
     (h_target : t.zmms.get ymm_target = BitVec.broadcastb 256 (BitVec.setWidth 8 ch)) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 33)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 31)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -4172,14 +4068,14 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
       · exact hd_str_len rfl
       · exact hd_str_offset rfl
       · exact hd_str_mask rfl)
-  -- Directive 29: .label compressed_tail
+  -- Directive 27: .label compressed_tail
   sstep
-  refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
-  -- Directive 30: testl %ecx, %ecx
+  refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
+  -- Directive 28: testl %ecx, %ecx
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 35) (by rw [h_prog_len]; omega) ?_
-  -- Directive 31: je not_found_vzero
+  refine Program.loopCont_of_le (j := 33) (by rw [h_prog_len]; omega) ?_
+  -- Directive 29: je not_found_vzero
   sstep
   have h_and_self : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) &&& BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) =
       (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) := by simp [BitVec.and_self]
@@ -4187,10 +4083,10 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
   by_cases hr0 : r_left = 0
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = true := by
       rw [h_rcx, hr0]; rfl
-    simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-    refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
+    simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+    refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
     have hspec := indexOfSpec_tail_not_found from_k T r_left h_from_eq h_len hpre hr0
-    exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ chars ch fromIndex hspec hm hr hz
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = false := by
       rw [h_rcx]
@@ -4203,7 +4099,7 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
         exact hr0 this
       exact this
     simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 36) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 34) (by rw [h_prog_len]; omega) ?_
     have haddr_tail : t.regs.get64 str + t.regs.get64 temp_len + -16#64 = A + .ofNat 64 (T - 32) + 16#64 := by
       rw [hstr, h_len_reg]
       have : (BitVec.ofNat 64 T : BitVec 64) = BitVec.ofNat 64 (T - 32) + 32#64 := by
@@ -4219,13 +4115,13 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
     sstep
     rw [hload]
     dsimp only []
+    refine Program.loopCont_of_le (j := 35) (by rw [h_prog_len]; omega) ?_
+    sstep
+    refine Program.loopCont_of_le (j := 36) (by rw [h_prog_len]; omega) ?_
+    sstep
     refine Program.loopCont_of_le (j := 37) (by rw [h_prog_len]; omega) ?_
     sstep
     refine Program.loopCont_of_le (j := 38) (by rw [h_prog_len]; omega) ?_
-    sstep
-    refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
-    sstep
-    refine Program.loopCont_of_le (j := 40) (by rw [h_prog_len]; omega) ?_
     sstep
     have h_set_rcx : ∀ (regs : Reg64s) (v : BitVec 64), (regs.set64 Reg64.rcx v).rcx = UInt64.ofBitVec v := fun _ _ => rfl
     simp only [h_set_rcx, UInt64.toBitVec_ofBitVec]
@@ -4258,18 +4154,18 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
     by_cases h_one : ((BitVec.extractLsb' 0 8
           (BitVec.setWidth 64 (32#32 + -BitVec.setWidth 32 (t.regs.get64 Reg64.rcx)))).toNat &&& 31 == 1) = true
     · simp only [h_one, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 41) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 42) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 40) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-        refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+        refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (compressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre (by exact hzf)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4291,7 +4187,7 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 43) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 41) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := BitVec.bsf shifted_mask
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -4299,7 +4195,7 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_compressed_tail_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_compressed_tail_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (compressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4326,18 +4222,18 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
             rfl)
     · simp only [h_one, Bool.false_eq_true, ↓reduceIte]
       intro of
-      refine Program.loopCont_of_le (j := 41) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 39) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 42) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 40) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-        refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+        refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (compressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre (by exact hzf)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4359,7 +4255,7 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 43) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 41) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := BitVec.bsf shifted_mask
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -4367,7 +4263,7 @@ theorem compressed_tail_lemma_after [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_compressed_tail_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_compressed_tail_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (compressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT32 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) hm (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -4963,12 +4859,11 @@ theorem uncompressed_tail_match_step (s : MachineData) (A : BitVec 64) (T : Nat)
   have hb_bsf : (BitVec.bsf mask).toNat = 2 * b := by rw [hj_bsf, hj_even]
   exact (sw_ofNat_add_bsf_uncomp (T - r_left) b mask hb_bsf hb16).symm
 
-theorem uncompressed_tail_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem uncompressed_tail_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -4997,11 +4892,11 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
     (hpre : ∀ (i : Nat) (hi : i < T - r_left - from_k),
       ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch)
     (h_target : t.zmms.get ymm_target = BitVec.broadcastw 256 (ch.setWidth 16)) :
-    Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
+    Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 77)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 117 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 75)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -5021,14 +4916,14 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
       · exact hd_str_len rfl
       · exact hd_str_offset rfl
       · exact hd_str_mask rfl)
-  -- Directive 77: .label uncompressed_tail
+  -- Directive 75: .label uncompressed_tail
   sstep
-  refine Program.loopCont_of_le (j := 78) (by rw [h_prog_len]; omega) ?_
-  -- Directive 78: testl %ecx, %ecx
+  refine Program.loopCont_of_le (j := 76) (by rw [h_prog_len]; omega) ?_
+  -- Directive 76: testl %ecx, %ecx
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 79) (by rw [h_prog_len]; omega) ?_
-  -- Directive 79: je not_found_vzero
+  refine Program.loopCont_of_le (j := 77) (by rw [h_prog_len]; omega) ?_
+  -- Directive 77: je not_found_vzero
   sstep
   have h_and_self : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) &&& BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) =
       (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) := by simp [BitVec.and_self]
@@ -5036,10 +4931,10 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
   by_cases hr0 : r_left = 0
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = true := by
       rw [h_rcx, hr0]; rfl
-    simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-    refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
+    simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+    refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
     have hspec := indexOfSpec_tail_not_found from_k T r_left h_from_eq h_len hpre hr0
-    exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ chars ch fromIndex hspec hm hr hz
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = false := by
       rw [h_rcx]
@@ -5052,7 +4947,7 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
         exact hr0 this
       exact this
     simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 80) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 78) (by rw [h_prog_len]; omega) ?_
     have haddr_tail : t.regs.get64 str + BitVec.ofInt 64 ((t.regs.get64 temp_len).signed * 2) + -16#64 =
         A + .ofNat 64 (2 * T - 32) + 16#64 := by
       rw [hstr, h_len_reg, ofInt_signed_mul2, ofNat_mul2]
@@ -5066,9 +4961,9 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
         some (Int.ofBytes ((List.range 32).map fun j => byteAt s.dmem A (2 * T - 32 + j))) := by
       rw [haddr_tail, hm]
       exact load_chunk s.dmem A (2 * T - 32) 32 (2 * T) h_some (by omega)
-    -- Directive 80: vpcmpeqw
+    -- Directive 78: vpcmpeqw
     sstep
-    have h_addr := addr_sib2_disp' t.regs str temp_len (-16) (Host.addrOf (H.start + 80)...Host.addrOf (H.start + 81))
+    have h_addr := addr_sib2_disp' t.regs str temp_len (-16) (Host.addrOf (H.start + 78)...Host.addrOf (H.start + 79))
     rw [h_addr]
     simp only [ofInt_signed_mul2, ofNat_mul2, hstr, h_len_reg]
     have : (Int64.toBitVec (-16) : BitVec 64) = -16#64 := rfl
@@ -5082,21 +4977,21 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
       bv_decide
     rw [this, hm, load_chunk s.dmem A (2 * T - 32) 32 (2 * T) h_some (by omega)]
     dsimp only []
-    refine Program.loopCont_of_le (j := 81) (by rw [h_prog_len]; omega) ?_
-    -- Directive 81: vpmovmskb
+    refine Program.loopCont_of_le (j := 79) (by rw [h_prog_len]; omega) ?_
+    -- Directive 79: vpmovmskb
     sstep
-    refine Program.loopCont_of_le (j := 82) (by rw [h_prog_len]; omega) ?_
-    -- Directive 82: shll , %ecx
+    refine Program.loopCont_of_le (j := 80) (by rw [h_prog_len]; omega) ?_
+    -- Directive 80: shll , %ecx
     sstep
     intro _
+    refine Program.loopCont_of_le (j := 81) (by rw [h_prog_len]; omega) ?_
+    -- Directive 81: negl %ecx
+    sstep
+    refine Program.loopCont_of_le (j := 82) (by rw [h_prog_len]; omega) ?_
+    -- Directive 82: addl 2, %ecx
+    sstep
     refine Program.loopCont_of_le (j := 83) (by rw [h_prog_len]; omega) ?_
-    -- Directive 83: negl %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 84) (by rw [h_prog_len]; omega) ?_
-    -- Directive 84: addl 2, %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 85) (by rw [h_prog_len]; omega) ?_
-    -- Directive 85: shrl %cl, temp_mask
+    -- Directive 83: shrl %cl, temp_mask
     sstep
     have h_set_rcx : ∀ (regs : Reg64s) (v : BitVec 64), (regs.set64 Reg64.rcx v).rcx = UInt64.ofBitVec v := fun _ _ => rfl
     simp only [h_set_rcx, UInt64.toBitVec_ofBitVec]
@@ -5129,18 +5024,18 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
     by_cases h_one : ((BitVec.extractLsb' 0 8
           (BitVec.setWidth 64 (32#32 + -(BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) <<< 1)))).toNat &&& 31 == 1) = true
     · simp only [h_one, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 84) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 87) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 85) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-        refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+        refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (uncompressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre (by exact hzf)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5162,7 +5057,7 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := (BitVec.bsf shifted_mask) >>> 1
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5170,7 +5065,7 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_uncompressed_tail_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_uncompressed_tail_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (uncompressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5197,18 +5092,18 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
             rfl)
     · simp only [h_one, Bool.false_eq_true, ↓reduceIte]
       intro of
-      refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 84) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 87) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 85) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 112) rfl]
-        refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 110) rfl]
+        refine Program.loopCont_of_le (j := 110) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (uncompressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre (by exact hzf)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5230,7 +5125,7 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := (BitVec.bsf shifted_mask) >>> 1
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5238,7 +5133,7 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_uncompressed_tail_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_uncompressed_tail_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (uncompressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5265,12 +5160,11 @@ theorem uncompressed_tail_lemma [Host] (slow : Label)
             rfl)
 
 
-theorem uncompressed_tail_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem uncompressed_tail_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -5299,11 +5193,11 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
     (hpre : ∀ (i : Nat) (hi : i < T - r_left - from_k),
       ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch)
     (h_target : t.zmms.get ymm_target = BitVec.broadcastw 256 (ch.setWidth 16)) :
-    Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
+    Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
       (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-      (StringIndexOfSlow slow ch s)
-      ⟨t, Host.addrOf (H.start + 81)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 121 := rfl
+      (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 79)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -5324,14 +5218,14 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
       · exact hd_str_len rfl
       · exact hd_str_offset rfl
       · exact hd_str_mask rfl)
-  -- Directive 77: .label uncompressed_tail
+  -- Directive 75: .label uncompressed_tail
   sstep
-  refine Program.loopCont_of_le (j := 82) (by rw [h_prog_len]; omega) ?_
-  -- Directive 78: testl %ecx, %ecx
+  refine Program.loopCont_of_le (j := 80) (by rw [h_prog_len]; omega) ?_
+  -- Directive 76: testl %ecx, %ecx
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 83) (by rw [h_prog_len]; omega) ?_
-  -- Directive 79: je not_found_vzero
+  refine Program.loopCont_of_le (j := 81) (by rw [h_prog_len]; omega) ?_
+  -- Directive 77: je not_found_vzero
   sstep
   have h_and_self : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) &&& BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) =
       (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) := by simp [BitVec.and_self]
@@ -5339,10 +5233,10 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
   by_cases hr0 : r_left = 0
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = true := by
       rw [h_rcx, hr0]; rfl
-    simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-    refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
+    simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+    refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
     have hspec := indexOfSpec_tail_not_found from_k T r_left h_from_eq h_len hpre hr0
-    exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ chars ch fromIndex hspec hm hr hz
   · have hzf : (BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) == 0#32) = false := by
       rw [h_rcx]
@@ -5355,7 +5249,7 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
         exact hr0 this
       exact this
     simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 84) (by rw [h_prog_len]; omega) ?_
+    refine Program.loopCont_of_le (j := 82) (by rw [h_prog_len]; omega) ?_
     have haddr_tail : t.regs.get64 str + BitVec.ofInt 64 ((t.regs.get64 temp_len).signed * 2) + -16#64 =
         A + .ofNat 64 (2 * T - 32) + 16#64 := by
       rw [hstr, h_len_reg, ofInt_signed_mul2, ofNat_mul2]
@@ -5369,9 +5263,9 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
         some (Int.ofBytes ((List.range 32).map fun j => byteAt s.dmem A (2 * T - 32 + j))) := by
       rw [haddr_tail, hm]
       exact load_chunk s.dmem A (2 * T - 32) 32 (2 * T) h_some (by omega)
-    -- Directive 80: vpcmpeqw
+    -- Directive 78: vpcmpeqw
     sstep
-    have h_addr := addr_sib2_disp' t.regs str temp_len (-16) (Host.addrOf (H.start + 84)...Host.addrOf (H.start + 85))
+    have h_addr := addr_sib2_disp' t.regs str temp_len (-16) (Host.addrOf (H.start + 82)...Host.addrOf (H.start + 83))
     rw [h_addr]
     simp only [ofInt_signed_mul2, ofNat_mul2, hstr, h_len_reg]
     have : (Int64.toBitVec (-16) : BitVec 64) = -16#64 := rfl
@@ -5385,21 +5279,21 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
       bv_decide
     rw [this, hm, load_chunk s.dmem A (2 * T - 32) 32 (2 * T) h_some (by omega)]
     dsimp only []
-    refine Program.loopCont_of_le (j := 85) (by rw [h_prog_len]; omega) ?_
-    -- Directive 81: vpmovmskb
+    refine Program.loopCont_of_le (j := 83) (by rw [h_prog_len]; omega) ?_
+    -- Directive 79: vpmovmskb
     sstep
-    refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
-    -- Directive 82: shll , %ecx
+    refine Program.loopCont_of_le (j := 84) (by rw [h_prog_len]; omega) ?_
+    -- Directive 80: shll , %ecx
     sstep
     intro _
+    refine Program.loopCont_of_le (j := 85) (by rw [h_prog_len]; omega) ?_
+    -- Directive 81: negl %ecx
+    sstep
+    refine Program.loopCont_of_le (j := 86) (by rw [h_prog_len]; omega) ?_
+    -- Directive 82: addl 2, %ecx
+    sstep
     refine Program.loopCont_of_le (j := 87) (by rw [h_prog_len]; omega) ?_
-    -- Directive 83: negl %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
-    -- Directive 84: addl 2, %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 89) (by rw [h_prog_len]; omega) ?_
-    -- Directive 85: shrl %cl, temp_mask
+    -- Directive 83: shrl %cl, temp_mask
     sstep
     have h_set_rcx : ∀ (regs : Reg64s) (v : BitVec 64), (regs.set64 Reg64.rcx v).rcx = UInt64.ofBitVec v := fun _ _ => rfl
     simp only [h_set_rcx, UInt64.toBitVec_ofBitVec]
@@ -5432,18 +5326,18 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
     by_cases h_one : ((BitVec.extractLsb' 0 8
           (BitVec.setWidth 64 (32#32 + -(BitVec.setWidth 32 (t.regs.get64 Reg64.rcx) <<< 1)))).toNat &&& 31 == 1) = true
     · simp only [h_one, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 90) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 91) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 89) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-        refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+        refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (uncompressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre (by exact hzf)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5465,7 +5359,7 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 92) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 90) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := (BitVec.bsf shifted_mask) >>> 1
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5473,7 +5367,7 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_uncompressed_tail_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_uncompressed_tail_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (uncompressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5500,18 +5394,18 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
             rfl)
     · simp only [h_one, Bool.false_eq_true, ↓reduceIte]
       intro of
-      refine Program.loopCont_of_le (j := 90) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 88) (by rw [h_prog_len]; omega) ?_
       sstep
       intro _
-      refine Program.loopCont_of_le (j := 91) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 89) (by rw [h_prog_len]; omega) ?_
       sstep
       have h_and_self : ∀ (x : BitVec 32), (x &&& x == 0#32) = (x == 0#32) := fun x => by bv_decide
       simp only [h_and_self]
       change Effects.All _ (if (shifted_mask == 0#32) = true then _ else _)
       by_cases hzf : (shifted_mask == 0#32) = true
-      · simp only [hzf, addrOf_label hlab (H := H) (i := 116) rfl]
-        refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
-        exact ret_not_found_vzero_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      · simp only [hzf, addrOf_label hlab (H := H) (i := 114) rfl]
+        refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+        exact ret_not_found_vzero_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ chars ch fromIndex (uncompressed_tail_none_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre (by exact hzf)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5533,7 +5427,7 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
             dsimp only []
             exact zmms_set_set (s.zmms.set ymm_target v1) ymm_match v2 _)
       · simp only [hzf, Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 92) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 90) (by rw [h_prog_len]; omega) ?_
         let b : BitVec 32 := (BitVec.bsf shifted_mask) >>> 1
         let idx : BitVec 32 := BitVec.setWidth 32 (.ofNat 64 (T - r_left) + b.zeroExtend 64)
         have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5541,7 +5435,7 @@ theorem uncompressed_tail_lemma_after [Host] (slow : Label)
         have h_mask_ne32 : shifted_mask ≠ 0#32 := by
           intro h
           simp [h] at hzf
-        exact ret_uncompressed_tail_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_uncompressed_tail_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s _ chars ch fromIndex idx (uncompressed_tail_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq t ymm_target h_target r_left (by omega) hr_left (by omega) hT16 h_rcx h_from_k hpre shifted_mask rfl (by exact h_mask_ne32)) rfl (by
             intro r hr_out
             simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr_out
@@ -5576,13 +5470,12 @@ theorem bv_and_self_zero (x : BitVec 32) : (x &&& x == 0#32) = (x == 0#32) := by
 
 
 
-theorem compressed_avx_loop_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem compressed_avx_loop_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -5609,11 +5502,11 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
       (h_from_k : from_k ≤ k)
       (hpre : ∀ (i : Nat) (hi : i < k - from_k),
         ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
+      Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
         (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 20)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 117 := rfl
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 18)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -5646,23 +5539,23 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
     obtain ⟨v2, hv⟩ := hz
     rw [hv]
     exact zmms_get_target s.zmms ymm_target ymm_match (BitVec.broadcastb 256 (BitVec.setWidth 8 ch)) v2 h_ymm_diff
-  -- Directive 20: .label "compressed_avx_loop"
+  -- Directive 18: .label "compressed_avx_loop"
   sstep
-  refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
-  -- Directive 21: vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
+  refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
+  -- Directive 19: vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
   sstep
   simp only [hstr, hoff]
   rw [← haddr, hload]
   dsimp only []
-  refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
-  -- Directive 22: vpmovmskb ymm_match, temp_mask
+  refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
+  -- Directive 20: vpmovmskb ymm_match, temp_mask
   sstep
-  refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
-  -- Directive 23: testl temp_mask, temp_mask
+  refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
+  -- Directive 21: testl temp_mask, temp_mask
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
-  -- Directive 24: jnz compressed_match_found
+  refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
+  -- Directive 22: jnz compressed_match_found
   sstep
   let chunk_mask := (BitVec.pcmpeqb (t.zmms.get ymm_target)
       (BitVec.ofInt 256 (Int.ofBytes (List.map (fun j => byteAt s.dmem A (k + j)) (List.range 32))))).pmovmskb
@@ -5671,13 +5564,13 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
   rw [h_and_self]
   by_cases h_zero : (chunk_mask == 0#32) = true
   · simp only [h_zero, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
-    -- Directive 25: addq $32, temp_offset
+    refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
+    -- Directive 23: addq $32, temp_offset
     sstep
     simp only [hd_offset_mask, ↓reduceIte, hoff]
     rw [← BitVec.ofNat_add]
-    refine Program.loopCont_of_le (j := 26) (by rw [h_prog_len]; omega) ?_
-    -- Directive 26: subl $32, %ecx
+    refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
+    -- Directive 24: subl $32, %ecx
     sstep
     have h_rcx_toff : (Reg64.rcx = temp_offset) = false := by simp [hd_rcx_offset]
     have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5685,11 +5578,11 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
     simp only [h_rcx_toff, h_toff_rcx, h_rcx_mask, get64_set64, Bool.false_eq_true, ↓reduceIte, hrcx]
     have h32 : (32#32 : BitVec 32) = BitVec.ofNat 32 32 := rfl
     rw [h32, ofNat32_sub_lit (show 32 ≤ r by omega)]
-    refine Program.loopCont_of_le (j := 27) (by rw [h_prog_len]; omega) ?_
-    -- Directive 27: cmpl $32, %ecx
+    refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
+    -- Directive 25: cmpl $32, %ecx
     sstep
-    refine Program.loopCont_of_le (j := 28) (by rw [h_prog_len]; omega) ?_
-    -- Directive 28: jae compressed_avx_loop
+    refine Program.loopCont_of_le (j := 26) (by rw [h_prog_len]; omega) ?_
+    -- Directive 26: jae compressed_avx_loop
     sstep
     have hr_sub_lt : r - 32 < 2 ^ 32 := by omega
     have h32 : (32#32 : BitVec 32) = BitVec.ofNat 32 32 := rfl
@@ -5708,7 +5601,7 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
         exact h_step
     by_cases hlt : r - 32 < 32
     · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 29) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 27) (by rw [h_prog_len]; omega) ?_
       have hT_sub : T - (r - 32) = k + 32 := by omega
       have h_from_k_le : from_k ≤ T - (r - 32) := by omega
       have hpre_tail_in : ∀ (i : Nat) (hi : i < T - (r - 32) - from_k),
@@ -5716,7 +5609,7 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
         intro i hi
         rw [hT_sub] at hi
         exact hpre_extended i hi
-      exact compressed_tail_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      exact compressed_tail_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct hlab H s c d A T hA hT hT32 h_data h_some ch h_ch chars h_len h_chars fromIndex from_k h_from_eq
         _ hm (by
           intro r' hr'
@@ -5748,8 +5641,8 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
           rw [hv, zmms_set_set]
           exact zmms_get_target s.zmms ymm_target ymm_match _ _ h_ymm_diff)
     · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 20) rfl]
-      refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
+        addrOf_label hlab (H := H) (i := 18) rfl]
+      refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
       refine ih (r - 32) (by omega) (k + 32) _ hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -5773,8 +5666,8 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
         (by simp only [get64_set64, h_toff_rcx, Bool.false_eq_true, ↓reduceIte, Nat.add_comm])
         (by simp only [get64_set64, sw32_64, ↓reduceIte])
         (by omega) (by omega) (by omega) hpre_extended
-  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 44) rfl]
-    refine Program.loopCont_of_le (j := 44) (by rw [h_prog_len]; omega) ?_
+  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 42) rfl]
+    refine Program.loopCont_of_le (j := 42) (by rw [h_prog_len]; omega) ?_
     let idx := BitVec.setWidth 32 (.ofNat 64 k + (BitVec.bsf chunk_mask).zeroExtend 64)
     have h_mask_ne32 : chunk_mask ≠ 0#32 := by
       intro h
@@ -5785,7 +5678,7 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
         dsimp [chunk_mask]
         rw [h_target]
       exact compressed_avx_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq k (by omega) h_from_k hpre chunk_mask h_chunk_mask_eq h_mask_ne32
-    exact ret_compressed_avx_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_compressed_avx_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct hlab H s _ chars ch fromIndex idx hspec_here hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -5814,13 +5707,12 @@ theorem compressed_avx_loop_lemma [Host] (slow : Label)
         rfl)
 
 
-theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem compressed_avx_loop_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -5847,11 +5739,11 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
       (h_from_k : from_k ≤ k)
       (hpre : ∀ (i : Nat) (hi : i < k - from_k),
         ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
+      Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
         (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 24)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 121 := rfl
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 22)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -5885,23 +5777,23 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
     obtain ⟨v2, hv⟩ := hz
     rw [hv]
     exact zmms_get_target s.zmms ymm_target ymm_match (BitVec.broadcastb 256 (BitVec.setWidth 8 ch)) v2 h_ymm_diff
-  -- Directive 24: .label "compressed_avx_loop"
+  -- Directive 22: .label "compressed_avx_loop"
   sstep
-  refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
-  -- Directive 25: vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
+  refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
+  -- Directive 23: vpcmpeqb 16(str, temp_offset, 1), ymm_target, ymm_match
   sstep
   simp only [hstr, hoff]
   rw [← haddr, hload]
   dsimp only []
-  refine Program.loopCont_of_le (j := 26) (by rw [h_prog_len]; omega) ?_
-  -- Directive 26: vpmovmskb ymm_match, temp_mask
+  refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
+  -- Directive 24: vpmovmskb ymm_match, temp_mask
   sstep
-  refine Program.loopCont_of_le (j := 27) (by rw [h_prog_len]; omega) ?_
-  -- Directive 27: testl temp_mask, temp_mask
+  refine Program.loopCont_of_le (j := 25) (by rw [h_prog_len]; omega) ?_
+  -- Directive 25: testl temp_mask, temp_mask
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 28) (by rw [h_prog_len]; omega) ?_
-  -- Directive 28: jnz compressed_match_found
+  refine Program.loopCont_of_le (j := 26) (by rw [h_prog_len]; omega) ?_
+  -- Directive 26: jnz compressed_match_found
   sstep
   let chunk_mask := (BitVec.pcmpeqb (t.zmms.get ymm_target)
       (BitVec.ofInt 256 (Int.ofBytes (List.map (fun j => byteAt s.dmem A (k + j)) (List.range 32))))).pmovmskb
@@ -5910,13 +5802,13 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
   rw [h_and_self]
   by_cases h_zero : (chunk_mask == 0#32) = true
   · simp only [h_zero, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 29) (by rw [h_prog_len]; omega) ?_
-    -- Directive 29: addq $32, temp_offset
+    refine Program.loopCont_of_le (j := 27) (by rw [h_prog_len]; omega) ?_
+    -- Directive 27: addq $32, temp_offset
     sstep
     simp only [hd_offset_mask, ↓reduceIte, hoff]
     rw [← BitVec.ofNat_add]
-    refine Program.loopCont_of_le (j := 30) (by rw [h_prog_len]; omega) ?_
-    -- Directive 30: subl $32, %ecx
+    refine Program.loopCont_of_le (j := 28) (by rw [h_prog_len]; omega) ?_
+    -- Directive 28: subl $32, %ecx
     sstep
     have h_rcx_toff : (Reg64.rcx = temp_offset) = false := by simp [hd_rcx_offset]
     have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -5924,11 +5816,11 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
     simp only [h_rcx_toff, h_toff_rcx, h_rcx_mask, get64_set64, Bool.false_eq_true, ↓reduceIte, hrcx]
     have h32 : (32#32 : BitVec 32) = BitVec.ofNat 32 32 := rfl
     rw [h32, ofNat32_sub_lit (show 32 ≤ r by omega)]
-    refine Program.loopCont_of_le (j := 31) (by rw [h_prog_len]; omega) ?_
-    -- Directive 31: cmpl $32, %ecx
+    refine Program.loopCont_of_le (j := 29) (by rw [h_prog_len]; omega) ?_
+    -- Directive 29: cmpl $32, %ecx
     sstep
-    refine Program.loopCont_of_le (j := 32) (by rw [h_prog_len]; omega) ?_
-    -- Directive 32: jae compressed_avx_loop
+    refine Program.loopCont_of_le (j := 30) (by rw [h_prog_len]; omega) ?_
+    -- Directive 30: jae compressed_avx_loop
     sstep
     have hr_sub_lt : r - 32 < 2 ^ 32 := by omega
     have h32 : (32#32 : BitVec 32) = BitVec.ofNat 32 32 := rfl
@@ -5947,7 +5839,7 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
         exact h_step
     by_cases hlt : r - 32 < 32
     · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 33) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 31) (by rw [h_prog_len]; omega) ?_
       have hT_sub : T - (r - 32) = k + 32 := by omega
       have h_from_k_le : from_k ≤ T - (r - 32) := by omega
       have hpre_tail_in : ∀ (i : Nat) (hi : i < T - (r - 32) - from_k),
@@ -5955,7 +5847,7 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
         intro i hi
         rw [hT_sub] at hi
         exact hpre_extended i hi
-      exact compressed_tail_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      exact compressed_tail_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct hlab H s c d A T hA hT hT32 h_data h_some ch h_ch chars h_len h_chars fromIndex from_k h_from_eq
         _ hm (by
           intro r' hr'
@@ -5987,8 +5879,8 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
           rw [hv, zmms_set_set]
           exact zmms_get_target s.zmms ymm_target ymm_match _ _ h_ymm_diff)
     · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 24) rfl]
-      refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
+        addrOf_label hlab (H := H) (i := 22) rfl]
+      refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
       refine ih (r - 32) (by omega) (k + 32) _ hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6012,8 +5904,8 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
         (by simp only [get64_set64, h_toff_rcx, Bool.false_eq_true, ↓reduceIte, Nat.add_comm])
         (by simp only [get64_set64, sw32_64, ↓reduceIte])
         (by omega) (by omega) (by omega) hpre_extended
-  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 48) rfl]
-    refine Program.loopCont_of_le (j := 48) (by rw [h_prog_len]; omega) ?_
+  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 46) rfl]
+    refine Program.loopCont_of_le (j := 46) (by rw [h_prog_len]; omega) ?_
     let idx := BitVec.setWidth 32 (.ofNat 64 k + (BitVec.bsf chunk_mask).zeroExtend 64)
     have h_mask_ne32 : chunk_mask ≠ 0#32 := by
       intro h
@@ -6024,7 +5916,7 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
         dsimp [chunk_mask]
         rw [h_target]
       exact compressed_avx_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq k (by omega) h_from_k hpre chunk_mask h_chunk_mask_eq h_mask_ne32
-    exact ret_compressed_avx_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_compressed_avx_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct hlab H s _ chars ch fromIndex idx hspec_here hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6053,13 +5945,12 @@ theorem compressed_avx_loop_lemma_after [Host] (slow : Label)
         rfl)
 
 
-theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
-    (str search_value out temp_len temp_offset temp_mask : Reg64)
+theorem uncompressed_avx_loop_lemma [Host] (str search_value out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -6088,11 +5979,11 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
       (h_from_k : from_k ≤ k)
       (hpre : ∀ (i : Nat) (hi : i < k - from_k),
         ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
+      Program.Loop (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H
         (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 68)⟩ := by
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 117 := rfl
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 66)⟩ := by
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 115 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -6128,12 +6019,12 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
     obtain ⟨v2, hv⟩ := hz
     rw [hv]
     exact zmms_get_target s.zmms ymm_target ymm_match (BitVec.broadcastw 256 (ch.setWidth 16)) v2 h_ymm_diff
-  -- Directive 68: .label "uncompressed_avx_loop"
+  -- Directive 66: .label "uncompressed_avx_loop"
   sstep
-  refine Program.loopCont_of_le (j := 69) (by rw [h_prog_len]; omega) ?_
-  -- Directive 69: vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
+  refine Program.loopCont_of_le (j := 67) (by rw [h_prog_len]; omega) ?_
+  -- Directive 67: vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
   sstep
-  have h_addr := addr_sib2_disp' t.regs str temp_offset 16 (Host.addrOf (H.start + 69)...Host.addrOf (H.start + 70))
+  have h_addr := addr_sib2_disp' t.regs str temp_offset 16 (Host.addrOf (H.start + 67)...Host.addrOf (H.start + 68))
   rw [h_addr]
   simp only [ofInt_signed_mul2, ofNat_mul2, hstr, hoff]
   have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
@@ -6143,15 +6034,15 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
     ac_rfl
   rw [h_addr_match, hload]
   dsimp only []
-  refine Program.loopCont_of_le (j := 70) (by rw [h_prog_len]; omega) ?_
-  -- Directive 70: vpmovmskb ymm_match, temp_mask
+  refine Program.loopCont_of_le (j := 68) (by rw [h_prog_len]; omega) ?_
+  -- Directive 68: vpmovmskb ymm_match, temp_mask
   sstep
-  refine Program.loopCont_of_le (j := 71) (by rw [h_prog_len]; omega) ?_
-  -- Directive 71: testl temp_mask, temp_mask
+  refine Program.loopCont_of_le (j := 69) (by rw [h_prog_len]; omega) ?_
+  -- Directive 69: testl temp_mask, temp_mask
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 72) (by rw [h_prog_len]; omega) ?_
-  -- Directive 72: jnz uncompressed_match_found
+  refine Program.loopCont_of_le (j := 70) (by rw [h_prog_len]; omega) ?_
+  -- Directive 70: jnz uncompressed_match_found
   sstep
   let chunk_mask := (BitVec.pcmpeqw (t.zmms.get ymm_target)
       (BitVec.ofInt 256 (Int.ofBytes (List.map (fun j => byteAt s.dmem A (2 * k + j)) (List.range 32))))).pmovmskb
@@ -6160,13 +6051,13 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
   rw [h_and_self]
   by_cases h_zero : (chunk_mask == 0#32) = true
   · simp only [h_zero, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 73) (by rw [h_prog_len]; omega) ?_
-    -- Directive 73: addq $16, temp_offset
+    refine Program.loopCont_of_le (j := 71) (by rw [h_prog_len]; omega) ?_
+    -- Directive 71: addq $16, temp_offset
     sstep
     simp only [hd_offset_mask, ↓reduceIte, hoff]
     rw [← BitVec.ofNat_add]
-    refine Program.loopCont_of_le (j := 74) (by rw [h_prog_len]; omega) ?_
-    -- Directive 74: subl $16, %ecx
+    refine Program.loopCont_of_le (j := 72) (by rw [h_prog_len]; omega) ?_
+    -- Directive 72: subl $16, %ecx
     sstep
     have h_rcx_toff : (Reg64.rcx = temp_offset) = false := by simp [hd_rcx_offset]
     have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -6174,11 +6065,11 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
     simp only [h_rcx_toff, h_toff_rcx, h_rcx_mask, get64_set64, Bool.false_eq_true, ↓reduceIte, hrcx]
     have h16 : (16#32 : BitVec 32) = BitVec.ofNat 32 16 := rfl
     rw [h16, ofNat32_sub_lit (show 16 ≤ r by omega)]
-    refine Program.loopCont_of_le (j := 75) (by rw [h_prog_len]; omega) ?_
-    -- Directive 75: cmpl $16, %ecx
+    refine Program.loopCont_of_le (j := 73) (by rw [h_prog_len]; omega) ?_
+    -- Directive 73: cmpl $16, %ecx
     sstep
-    refine Program.loopCont_of_le (j := 76) (by rw [h_prog_len]; omega) ?_
-    -- Directive 76: jae uncompressed_avx_loop
+    refine Program.loopCont_of_le (j := 74) (by rw [h_prog_len]; omega) ?_
+    -- Directive 74: jae uncompressed_avx_loop
     sstep
     have hr_sub_lt : r - 16 < 2 ^ 32 := by omega
     have h16 : (16#32 : BitVec 32) = BitVec.ofNat 32 16 := rfl
@@ -6199,7 +6090,7 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
         exact h_step
     by_cases hlt : r - 16 < 16
     · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 77) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 75) (by rw [h_prog_len]; omega) ?_
       have hT_sub : T - (r - 16) = k + 16 := by omega
       have h_from_k_le : from_k ≤ T - (r - 16) := by omega
       have hpre_tail_in : ∀ (i : Nat) (hi : i < T - (r - 16) - from_k),
@@ -6207,7 +6098,7 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
         intro i hi
         rw [hT_sub] at hi
         exact hpre_extended i hi
-      exact uncompressed_tail_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      exact uncompressed_tail_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct hlab H s c d A T hA hT (by omega) h_data h_some ch h_ch chars h_len h_chars fromIndex from_k h_from_eq
         _ hm (by
           intro r' hr'
@@ -6239,8 +6130,8 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
           rw [hv, zmms_set_set]
           exact zmms_get_target s.zmms ymm_target ymm_match _ _ h_ymm_diff)
     · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 68) rfl]
-      refine Program.loopCont_of_le (j := 68) (by rw [h_prog_len]; omega) ?_
+        addrOf_label hlab (H := H) (i := 66) rfl]
+      refine Program.loopCont_of_le (j := 66) (by rw [h_prog_len]; omega) ?_
       refine ih (r - 16) (by omega) (k + 16) _ hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6264,8 +6155,8 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
         (by simp only [get64_set64, h_toff_rcx, Bool.false_eq_true, ↓reduceIte, Nat.add_comm])
         (by simp only [get64_set64, sw32_64, ↓reduceIte])
         (by omega) (by omega) (by omega) hpre_extended
-  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 94) rfl]
-    refine Program.loopCont_of_le (j := 94) (by rw [h_prog_len]; omega) ?_
+  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 92) rfl]
+    refine Program.loopCont_of_le (j := 92) (by rw [h_prog_len]; omega) ?_
     let idx := BitVec.setWidth 32 (.ofNat 64 k + ((BitVec.bsf chunk_mask) >>> 1).zeroExtend 64)
     have h_mask_ne32 : chunk_mask ≠ 0#32 := by
       intro h
@@ -6276,7 +6167,7 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
         dsimp [chunk_mask]
         rw [h_target]
       exact uncompressed_avx_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq k (by omega) h_from_k hpre chunk_mask h_chunk_mask_eq h_mask_ne32
-    exact ret_uncompressed_avx_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_uncompressed_avx_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct hlab H s _ chars ch fromIndex idx hspec_here hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6305,13 +6196,12 @@ theorem uncompressed_avx_loop_lemma [Host] (slow : Label)
         rfl)
 
 
-theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
-    (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
+theorem uncompressed_avx_loop_lemma_after [Host] (str search_value start_idx out temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
     (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (hlab : LabelsPlaced)
-    (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
+    (H : Embedding (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match))
     (s : MachineData)
     (c : BitVec 32) (d : List UInt8)
     (A : BitVec 64) (T : Nat)
@@ -6340,11 +6230,11 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
       (h_from_k : from_k ≤ k)
       (hpre : ∀ (i : Nat) (hi : i < k - from_k),
         ((chars.drop from_k).get ⟨i, by rw [List.length_drop, h_len]; omega⟩).zeroExtend 32 ≠ ch),
-      Program.Loop (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
+      Program.Loop (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H
         (StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match chars ch fromIndex s)
-        (StringIndexOfSlow slow ch s)
-        ⟨t, Host.addrOf (H.start + 72)⟩ := by
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 121 := rfl
+        (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 70)⟩ := by
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 119 := rfl
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨hd_str_search, hd_str_start, hd_str_out, hd_str_rcx, hd_str_len, hd_str_offset, hd_str_mask⟩,
@@ -6381,12 +6271,12 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
     obtain ⟨v2, hv⟩ := hz
     rw [hv]
     exact zmms_get_target s.zmms ymm_target ymm_match (BitVec.broadcastw 256 (ch.setWidth 16)) v2 h_ymm_diff
-  -- Directive 72: .label "uncompressed_avx_loop"
+  -- Directive 70: .label "uncompressed_avx_loop"
   sstep
-  refine Program.loopCont_of_le (j := 73) (by rw [h_prog_len]; omega) ?_
-  -- Directive 73: vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
+  refine Program.loopCont_of_le (j := 71) (by rw [h_prog_len]; omega) ?_
+  -- Directive 71: vpcmpeqw 16(str, temp_offset, 2), ymm_target, ymm_match
   sstep
-  have h_addr := addr_sib2_disp' t.regs str temp_offset 16 (Host.addrOf (H.start + 73)...Host.addrOf (H.start + 74))
+  have h_addr := addr_sib2_disp' t.regs str temp_offset 16 (Host.addrOf (H.start + 71)...Host.addrOf (H.start + 72))
   rw [h_addr]
   simp only [ofInt_signed_mul2, ofNat_mul2, hstr, hoff]
   have : (Int64.toBitVec 16 : BitVec 64) = 16#64 := rfl
@@ -6396,15 +6286,15 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
     ac_rfl
   rw [h_addr_match, hload]
   dsimp only []
-  refine Program.loopCont_of_le (j := 74) (by rw [h_prog_len]; omega) ?_
-  -- Directive 74: vpmovmskb ymm_match, temp_mask
+  refine Program.loopCont_of_le (j := 72) (by rw [h_prog_len]; omega) ?_
+  -- Directive 72: vpmovmskb ymm_match, temp_mask
   sstep
-  refine Program.loopCont_of_le (j := 75) (by rw [h_prog_len]; omega) ?_
-  -- Directive 75: testl temp_mask, temp_mask
+  refine Program.loopCont_of_le (j := 73) (by rw [h_prog_len]; omega) ?_
+  -- Directive 73: testl temp_mask, temp_mask
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 76) (by rw [h_prog_len]; omega) ?_
-  -- Directive 76: jnz uncompressed_match_found
+  refine Program.loopCont_of_le (j := 74) (by rw [h_prog_len]; omega) ?_
+  -- Directive 74: jnz uncompressed_match_found
   sstep
   let chunk_mask := (BitVec.pcmpeqw (t.zmms.get ymm_target)
       (BitVec.ofInt 256 (Int.ofBytes (List.map (fun j => byteAt s.dmem A (2 * k + j)) (List.range 32))))).pmovmskb
@@ -6413,13 +6303,13 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
   rw [h_and_self]
   by_cases h_zero : (chunk_mask == 0#32) = true
   · simp only [h_zero, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 77) (by rw [h_prog_len]; omega) ?_
-    -- Directive 77: addq $16, temp_offset
+    refine Program.loopCont_of_le (j := 75) (by rw [h_prog_len]; omega) ?_
+    -- Directive 75: addq $16, temp_offset
     sstep
     simp only [hd_offset_mask, ↓reduceIte, hoff]
     rw [← BitVec.ofNat_add]
-    refine Program.loopCont_of_le (j := 78) (by rw [h_prog_len]; omega) ?_
-    -- Directive 78: subl $16, %ecx
+    refine Program.loopCont_of_le (j := 76) (by rw [h_prog_len]; omega) ?_
+    -- Directive 76: subl $16, %ecx
     sstep
     have h_rcx_toff : (Reg64.rcx = temp_offset) = false := by simp [hd_rcx_offset]
     have h_toff_rcx : (temp_offset = Reg64.rcx) = false := by simp [Ne.symm hd_rcx_offset]
@@ -6427,11 +6317,11 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
     simp only [h_rcx_toff, h_toff_rcx, h_rcx_mask, get64_set64, Bool.false_eq_true, ↓reduceIte, hrcx]
     have h16 : (16#32 : BitVec 32) = BitVec.ofNat 32 16 := rfl
     rw [h16, ofNat32_sub_lit (show 16 ≤ r by omega)]
-    refine Program.loopCont_of_le (j := 79) (by rw [h_prog_len]; omega) ?_
-    -- Directive 79: cmpl $16, %ecx
+    refine Program.loopCont_of_le (j := 77) (by rw [h_prog_len]; omega) ?_
+    -- Directive 77: cmpl $16, %ecx
     sstep
-    refine Program.loopCont_of_le (j := 80) (by rw [h_prog_len]; omega) ?_
-    -- Directive 80: jae uncompressed_avx_loop
+    refine Program.loopCont_of_le (j := 78) (by rw [h_prog_len]; omega) ?_
+    -- Directive 78: jae uncompressed_avx_loop
     sstep
     have hr_sub_lt : r - 16 < 2 ^ 32 := by omega
     have h16 : (16#32 : BitVec 32) = BitVec.ofNat 32 16 := rfl
@@ -6452,7 +6342,7 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
         exact h_step
     by_cases hlt : r - 16 < 16
     · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 81) (by rw [h_prog_len]; omega) ?_
+      refine Program.loopCont_of_le (j := 79) (by rw [h_prog_len]; omega) ?_
       have hT_sub : T - (r - 16) = k + 16 := by omega
       have h_from_k_le : from_k ≤ T - (r - 16) := by omega
       have hpre_tail_in : ∀ (i : Nat) (hi : i < T - (r - 16) - from_k),
@@ -6460,7 +6350,7 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
         intro i hi
         rw [hT_sub] at hi
         exact hpre_extended i hi
-      exact uncompressed_tail_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      exact uncompressed_tail_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct hlab H s c d A T hA hT (by omega) h_data h_some ch h_ch chars h_len h_chars fromIndex from_k h_from_eq
         _ hm (by
           intro r' hr'
@@ -6492,8 +6382,8 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
           rw [hv, zmms_set_set]
           exact zmms_get_target s.zmms ymm_target ymm_match _ _ h_ymm_diff)
     · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 72) rfl]
-      refine Program.loopCont_of_le (j := 72) (by rw [h_prog_len]; omega) ?_
+        addrOf_label hlab (H := H) (i := 70) rfl]
+      refine Program.loopCont_of_le (j := 70) (by rw [h_prog_len]; omega) ?_
       refine ih (r - 16) (by omega) (k + 16) _ hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6517,8 +6407,8 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
         (by simp only [get64_set64, h_toff_rcx, Bool.false_eq_true, ↓reduceIte, Nat.add_comm])
         (by simp only [get64_set64, sw32_64, ↓reduceIte])
         (by omega) (by omega) (by omega) hpre_extended
-  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 98) rfl]
-    refine Program.loopCont_of_le (j := 98) (by rw [h_prog_len]; omega) ?_
+  · simp only [h_zero, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 96) rfl]
+    refine Program.loopCont_of_le (j := 96) (by rw [h_prog_len]; omega) ?_
     let idx := BitVec.setWidth 32 (.ofNat 64 k + ((BitVec.bsf chunk_mask) >>> 1).zeroExtend 64)
     have h_mask_ne32 : chunk_mask ≠ 0#32 := by
       intro h
@@ -6529,7 +6419,7 @@ theorem uncompressed_avx_loop_lemma_after [Host] (slow : Label)
         dsimp [chunk_mask]
         rw [h_target]
       exact uncompressed_avx_match_step s A T d h_data ch h_ch chars h_len h_chars from_k fromIndex h_from_eq k (by omega) h_from_k hpre chunk_mask h_chunk_mask_eq h_mask_ne32
-    exact ret_uncompressed_avx_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_uncompressed_avx_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct hlab H s _ chars ch fromIndex idx hspec_here hm (by
         intro r' hr'
         have hr_not_in : r' ∉ [out, Reg64.rcx, temp_len, temp_offset, temp_mask] := by
@@ -6630,7 +6520,7 @@ theorem cmovg64_eval (fromIndex : BitVec 32) :
 
 
 
-theorem stringIndexOf_correct [Host] (slow : Label)
+theorem stringIndexOfNoCheck_correct [Host]
     (str search_value out : Reg64)
     (temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
@@ -6638,23 +6528,22 @@ theorem stringIndexOf_correct [Host] (slow : Label)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (c : BitVec 32) (d : List UInt8)
     (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
-    (hslow : ∀ (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match)),
-      IsSlowPathLabel (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H slow)
     (s₀ : MachineData) :
     ⦃ fun s => s = s₀ ∧ (s.regs.get64 str).toNat + 16 < 2 ^ 32 ∧
         d.length = strByteLen c ∧
+        (s.regs.get (Reg.low search_value Width.W32)).toNat ≤ 65535 ∧
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
         (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 str) c d ⋆ R) s.dmem ⦄
-      (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match)
+      (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match)
     ⦃ fun _ => StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match
           (strChars c d) (s₀.regs.get (Reg.low search_value Width.W32)) 0#32 s₀;
-      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low search_value Width.W32)) s₀ pc s ⦄ := by
+      fun _ _ => False ⦄ := by
   rw [Program.triple_iff]
-  rintro s ⟨rfl, hA32, hl, h_ascii, h_uncomp_pos, R, hmem⟩
+  rintro s ⟨rfl, hA32, hl, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
-  have h_prog_len : (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 117 := rfl
+  have h_prog_len : (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match).length = 115 := rfl
   change Program.Loop _ H _ _ ⟨s, Host.addrOf (H.start + 0)⟩
   let ch := BitVec.setWidth 32 (s.regs.get64 search_value)
   have hch_def : s.regs.get (Reg.low search_value Width.W32) = ch := by rw [get_low32]
@@ -6682,56 +6571,25 @@ theorem stringIndexOf_correct [Host] (slow : Label)
   have hd_search_len_ne : (search_value = temp_len) = false := by simp [hd_search_len]
   have hd_search_offset_ne : (search_value = temp_offset) = false := by simp [hd_search_offset]
   have hd_search_rcx_ne : (search_value = Reg64.rcx) = false := by simp [hd_search_rcx]
-  by_cases h_ch : ch.toNat > 65535
-  · have hch_gt : ch.toNat > 65535 := h_ch
-    have h_post : (s.regs.get (Reg.low search_value Width.W32)) = ch := hch_def
-    rw [h_post]
-    exact ret_slow slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
-      (strChars c d) 0#32 H s s ch hch_gt hch_def rfl rfl rfl (hslow H)
-  have h_ch_le : ch.toNat ≤ 65535 := by omega
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) =
-      decide (ch.toNat < 65535) := by
-    conv => lhs; rw [h_eq]
-    exact cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-  have h_ja : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !(ch - 65535#32 == 0#32)) = false := by
-    by_cases h_lt : ch.toNat < 65535
-    · rw [h_cf, decide_eq_true_iff.mpr h_lt]
-      rfl
-    · have : ch.toNat = 65535 := by omega
-      have hch_val : ch = 65535#32 := by rw [h_eq, this]
-      rw [hch_val]
-      decide
-  -- Directive 0: cmp search_value, bashxFFFF
-  sstep
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  -- Directive 1: ja slow
-  sstep
-  have h_ch_subst : BitVec.setWidth 32 (s.regs.get64 search_value) = ch := rfl
-  rw [h_ch_subst, h_ja]
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
-  -- Directive 2: movl 8(str), temp_len
+  have h_ch_le : ch.toNat ≤ 65535 := by simpa [hch_def] using hch_le
+  -- Directive 0: movl 8(str), temp_len
   have cA := fun i (hi : i < 4) => sep_get_l hmem (stringAt_cnt (i := i) hi)
   sstep
   rw [load_count s.dmem (s.regs.get64 str) c cA]
   simp only [cnt_val]
-  refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
-  -- Directive 3: testl temp_len, temp_len
+  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
+  -- Directive 1: testl temp_len, temp_len
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
-  -- Directive 4: je not_found
+  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
+  -- Directive 2: je not_found
   sstep
   have h_and_self : (c &&& c == 0#32) = (c == 0#32) := by simp [BitVec.and_self]
   rw [h_and_self]
   by_cases hc0 : c = 0#32
   · rw [hc0, beq_self_eq_true]
-    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 114) rfl]
-    refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 112) rfl]
+    refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
     have hd_nil : d = [] := by
       have : d.length = 0 := by rw [hl, hc0]; rfl
       exact List.eq_nil_of_length_eq_zero this
@@ -6739,7 +6597,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
       unfold strChars; rw [hd_nil]; rfl
     have hspec : indexOfSpec (strChars (0#32) d) ch 0#32 = -1#32 := by
       rw [hchars_nil, indexOfSpec_empty]
-    exact ret_not_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ (strChars (0#32) d) ch 0#32 hspec rfl (by
         intro r hr_out
         simp only [get64_set64]
@@ -6748,50 +6606,50 @@ theorem stringIndexOf_correct [Host] (slow : Label)
         · simp [h1]) (Or.inl rfl)
   · rw [beq_eq_false_iff_ne.mpr hc0]
     simp only [Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
-    -- Directive 5: movl temp_len, temp_mask
+    refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
+    -- Directive 3: movl temp_len, temp_mask
     sstep
-    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
-    -- Directive 6: shrl , temp_len
+    refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
+    -- Directive 4: shrl , temp_len
     sstep
     intro af
     simp only [↓reduceIte, beq_self_eq_true, Bool.false_eq_true]
+    refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
+    -- Directive 5: xorq temp_offset, temp_offset
+    sstep
+    intro _
+    refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
+    -- Directive 6: movl temp_len, %ecx
+    sstep
     refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
-    -- Directive 7: xorq temp_offset, temp_offset
+    -- Directive 7: subl temp_offset, %ecx
     sstep
-    intro _
     refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
-    -- Directive 8: movl temp_len, %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
-    -- Directive 9: subl temp_offset, %ecx
-    sstep
-    refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
-    -- Directive 10: testl , temp_mask
+    -- Directive 8: testl , temp_mask
     sstep
     intro _
-    refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
-    -- Directive 11: jnz uncompressed_path
+    refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
+    -- Directive 9: jnz uncompressed_path
     sstep
     simp only [hd_mask_rcx, hd_mask_offset, hd_mask_len, Bool.false_eq_true, ↓reduceIte, sw32_64, lsb_and1 c, Bool.not_not]
     by_cases h_comp : c.getLsbD 0 = false
     · rw [h_comp]
       simp only [Bool.not_false, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
-      -- Directive 12: cmpl 27, search_value
+      refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
+      -- Directive 10: cmpl 27, search_value
       sstep
       simp only [hd_search_rcx_ne, hd_search_offset_ne, hd_search_len_ne, hd_search_mask_ne, Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
-      -- Directive 13: jg not_found
+      refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
+      -- Directive 11: jg not_found
       sstep
       by_cases h_ch127 : ch.toNat > 127
       · rw [jg_ch127_true h_ch127 h_ch_le]
-        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 114) rfl]
-        refine Program.loopCont_of_le (j := 114) (by rw [h_prog_len]; omega) ?_
+        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 112) rfl]
+        refine Program.loopCont_of_le (j := 112) (by rw [h_prog_len]; omega) ?_
         have h_ascii' := strChars_compressed_ascii h_comp hl (h_ascii h_comp)
         have hspec : indexOfSpec (strChars c d) ch 0#32 = -1#32 :=
           indexOfSpec_compressed_gt127 h_ascii' h_ch127
-        exact ret_not_found slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        exact ret_not_found str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct H s _ (strChars c d) ch 0#32 hspec rfl (by
             intro r hr_out
             simp only [get64_set64]
@@ -6807,11 +6665,11 @@ theorem stringIndexOf_correct [Host] (slow : Label)
       · have h_ch127_le : ch.toNat ≤ 127 := by omega
         rw [jg_ch127_false h_ch127_le]
         simp only [Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
-        -- Directive 14: cmpl 2, temp_len
+        refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
+        -- Directive 12: cmpl 2, temp_len
         sstep
-        refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
-        -- Directive 15: jb compressed_scalar_loop
+        refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
+        -- Directive 13: jb compressed_scalar_loop
         sstep
         simp only [get64_set64, sw32_64, hd_len_rcx', hd_len_offset', hd_len_mask', hd_search_len_ne, Bool.false_eq_true, ↓reduceIte]
         have h_eq : c.ushiftRight 1 = BitVec.ofNat 32 (c >>> 1).toNat := by
@@ -6824,8 +6682,8 @@ theorem stringIndexOf_correct [Host] (slow : Label)
           exact cf_ofNat32 (x := (c >>> 1).toNat) (c := 32) (c >>> 1).isLt (by decide)
         by_cases hT32 : (c >>> 1).toNat < 32
         · rw [h_cf, decide_eq_true_iff.mpr hT32]
-          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 50) rfl]
-          refine Program.loopCont_of_le (j := 50) (by rw [h_prog_len]; omega) ?_
+          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 48) rfl]
+          refine Program.loopCont_of_le (j := 48) (by rw [h_prog_len]; omega) ?_
           have hinfo := string_info_of hmem hl
           have h_byte_len : strByteLen c = (c >>> 1).toNat := by
             unfold strByteLen; rw [h_comp]; simp
@@ -6842,7 +6700,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
           have h_pos : 0 < (c >>> 1).toNat := pos_of_comp c hc0 h_comp
           let m := (c >>> 1).toNat - 1
           have hm1 : m + 1 = (c >>> 1).toNat := by omega
-          refine compressed_scalar_loop_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+          refine compressed_scalar_loop_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
             h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl h_data h_some ch h_ch127_le
             (strChars c d) h_len_eq h_chars 0#32 0 rfl m 0 _ rfl ?_ (Or.inl rfl) ?_ ?_ ?_ (by omega) (by omega) (by intro i hi; omega)
           · intro r' hr'
@@ -6857,17 +6715,17 @@ theorem stringIndexOf_correct [Host] (slow : Label)
             rw [this, h_eq, hm1]
         · rw [h_cf, decide_eq_false_iff_not.mpr hT32]
           simp only [Bool.false_eq_true, ↓reduceIte]
+          refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
+          -- Directive 14: vmovd search_value, ymm_match
+          sstep
+          refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
+          -- Directive 15: vpbroadcastb ymm_match, ymm_target
+          sstep
           refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
-          -- Directive 16: vmovd search_value, ymm_match
+          -- Directive 16: cmpl 2, %ecx
           sstep
           refine Program.loopCont_of_le (j := 17) (by rw [h_prog_len]; omega) ?_
-          -- Directive 17: vpbroadcastb ymm_match, ymm_target
-          sstep
-          refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
-          -- Directive 18: cmpl 2, %ecx
-          sstep
-          refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
-          -- Directive 19: jb compressed_tail
+          -- Directive 17: jb compressed_tail
           sstep
           simp only [get64_set64, sw32_64, hd_offset_rcx, hd_offset_len, hd_offset_mask',
             hd_len_rcx', hd_len_offset', hd_len_mask',
@@ -6875,7 +6733,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
           have : c.ushiftRight 1 - 0#32 = c.ushiftRight 1 := by bv_decide
           rw [this, h_cf, decide_eq_false_iff_not.mpr hT32]
           simp only [Bool.false_eq_true, ↓reduceIte]
-          refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
+          refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
           have hinfo := string_info_of hmem hl
           have h_byte_len : strByteLen c = (c >>> 1).toNat := by
             unfold strByteLen; rw [h_comp]; simp
@@ -6890,7 +6748,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
             rw [strChars_compressed_get h_comp i hi]
             bv_decide
           have hT32_le : 32 ≤ (c >>> 1).toNat := by omega
-          refine compressed_avx_loop_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+          refine compressed_avx_loop_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
             h_distinct h_ymm_diff hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT32_le h_data h_some ch h_ch127_le
             (strChars c d) h_len_eq h_chars 0#32 0 rfl
             ((c >>> 1).toNat) 0 _ rfl ?hr ?hz ?hlen ?hoff ?hrcx (by omega) hT32_le (by omega) (by intro i hi; omega)
@@ -6914,15 +6772,15 @@ theorem stringIndexOf_correct [Host] (slow : Label)
         revert h_comp
         cases c.getLsbD 0 <;> decide
       rw [h_uncomp]
-      simp only [Bool.not_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 61) rfl]
+      simp only [Bool.not_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 59) rfl]
+      refine Program.loopCont_of_le (j := 59) (by rw [h_prog_len]; omega) ?_
+      -- Directive 59: .label uncompressed_path
+      sstep
+      refine Program.loopCont_of_le (j := 60) (by rw [h_prog_len]; omega) ?_
+      -- Directive 60: cmpl 6, temp_len
+      sstep
       refine Program.loopCont_of_le (j := 61) (by rw [h_prog_len]; omega) ?_
-      -- Directive 61: .label uncompressed_path
-      sstep
-      refine Program.loopCont_of_le (j := 62) (by rw [h_prog_len]; omega) ?_
-      -- Directive 62: cmpl 6, temp_len
-      sstep
-      refine Program.loopCont_of_le (j := 63) (by rw [h_prog_len]; omega) ?_
-      -- Directive 63: jb uncompressed_scalar_loop
+      -- Directive 61: jb uncompressed_scalar_loop
       sstep
       simp only [get64_set64, sw32_64, hd_len_rcx', hd_len_offset', hd_len_mask', hd_search_len_ne, Bool.false_eq_true, ↓reduceIte]
       have h_eq : c.ushiftRight 1 = BitVec.ofNat 32 (c >>> 1).toNat := by
@@ -6935,8 +6793,8 @@ theorem stringIndexOf_correct [Host] (slow : Label)
         exact cf_ofNat32 (x := (c >>> 1).toNat) (c := 16) (c >>> 1).isLt (by decide)
       by_cases hT16 : (c >>> 1).toNat < 16
       · rw [h_cf, decide_eq_true_iff.mpr hT16]
-        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 101) rfl]
-        refine Program.loopCont_of_le (j := 101) (by rw [h_prog_len]; omega) ?_
+        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 99) rfl]
+        refine Program.loopCont_of_le (j := 99) (by rw [h_prog_len]; omega) ?_
         have hinfo := string_info_of hmem hl
         have h_byte_len : strByteLen c = 2 * (c >>> 1).toNat := by
           unfold strByteLen; rw [h_uncomp]; simp
@@ -6954,7 +6812,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
         have h_pos : 0 < (c >>> 1).toNat := h_uncomp_pos h_uncomp
         let m := (c >>> 1).toNat - 1
         have hm1 : m + 1 = (c >>> 1).toNat := by omega
-        refine uncompressed_scalar_loop_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        refine uncompressed_scalar_loop_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl h_data h_some ch h_ch_le
           (strChars c d) h_len_eq h_chars 0#32 0 rfl m 0 _ rfl ?_ (Or.inl rfl) ?_ ?_ ?_ (by omega) (by omega) (by intro i hi; omega)
         · intro r' hr'
@@ -6969,17 +6827,17 @@ theorem stringIndexOf_correct [Host] (slow : Label)
           rw [this, h_eq, hm1]
       · rw [h_cf, decide_eq_false_iff_not.mpr hT16]
         simp only [Bool.false_eq_true, ↓reduceIte]
+        refine Program.loopCont_of_le (j := 62) (by rw [h_prog_len]; omega) ?_
+        -- Directive 62: vmovd search_value, ymm_match
+        sstep
+        refine Program.loopCont_of_le (j := 63) (by rw [h_prog_len]; omega) ?_
+        -- Directive 63: vpbroadcastw ymm_match, ymm_target
+        sstep
         refine Program.loopCont_of_le (j := 64) (by rw [h_prog_len]; omega) ?_
-        -- Directive 64: vmovd search_value, ymm_match
+        -- Directive 64: cmpl 6, %ecx
         sstep
         refine Program.loopCont_of_le (j := 65) (by rw [h_prog_len]; omega) ?_
-        -- Directive 65: vpbroadcastw ymm_match, ymm_target
-        sstep
-        refine Program.loopCont_of_le (j := 66) (by rw [h_prog_len]; omega) ?_
-        -- Directive 66: cmpl 6, %ecx
-        sstep
-        refine Program.loopCont_of_le (j := 67) (by rw [h_prog_len]; omega) ?_
-        -- Directive 67: jb uncompressed_tail
+        -- Directive 65: jb uncompressed_tail
         sstep
         simp only [get64_set64, sw32_64, hd_offset_rcx, hd_offset_len, hd_offset_mask',
           hd_len_rcx', hd_len_offset', hd_len_mask',
@@ -6987,7 +6845,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
         have : c.ushiftRight 1 - 0#32 = c.ushiftRight 1 := by bv_decide
         rw [this, h_cf, decide_eq_false_iff_not.mpr hT16]
         simp only [Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 68) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 66) (by rw [h_prog_len]; omega) ?_
         have hinfo := string_info_of hmem hl
         have h_byte_len : strByteLen c = 2 * (c >>> 1).toNat := by
           unfold strByteLen; rw [h_uncomp]; simp
@@ -7003,7 +6861,7 @@ theorem stringIndexOf_correct [Host] (slow : Label)
           intro i hi
           exact congrArg (BitVec.zeroExtend 32) (strChars_uncompressed_get h_uncomp i hi)
         have hT16_le : 16 ≤ (c >>> 1).toNat := by omega
-        refine uncompressed_avx_loop_lemma slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+        refine uncompressed_avx_loop_lemma str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct h_ymm_diff hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT16_le h_data h_some ch h_ch_le
           (strChars c d) h_len_eq h_chars 0#32 0 rfl
           ((c >>> 1).toNat) 0 _ rfl ?_ ?_ ?_ ?_ ?_ (by omega) hT16_le (by omega) (by intro i hi; omega)
@@ -7024,7 +6882,41 @@ theorem stringIndexOf_correct [Host] (slow : Label)
             Bool.false_eq_true, BitVec.xor_self, BitVec.setWidth_zero, ↓reduceIte]
           exact h_eq
 
-theorem stringIndexOfAfter_correct [Host] (slow : Label)
+/-- Correctness of the checked AVX2 `String.indexOf(ch)` lowering. -/
+theorem stringIndexOf_correct [Host] (slow : Label)
+    (str search_value out : Reg64)
+    (temp_len temp_offset temp_mask : Reg64)
+    (ymm_target ymm_match : AvxReg .W256)
+    (h_distinct : [str, search_value, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
+    (h_ymm_diff : ymm_target ≠ ymm_match)
+    (c : BitVec 32) (d : List UInt8)
+    (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
+    (hslow : ∀ (H : Embedding (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match)),
+      IsSlowPathLabel (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) H slow)
+    (s₀ : MachineData) :
+    ⦃ fun s => s = s₀ ∧ (s.regs.get64 str).toNat + 16 < 2 ^ 32 ∧
+        d.length = strByteLen c ∧
+        (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
+        ∃ R, (StringAt (s.regs.get64 str) c d ⋆ R) s.dmem ⦄
+      (stringIndexOfProg slow str search_value out temp_len temp_offset temp_mask ymm_target ymm_match)
+    ⦃ fun _ => StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match
+          (strChars c d) (s₀.regs.get (Reg.low search_value Width.W32)) 0#32 s₀;
+      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low search_value Width.W32)) s₀ pc s ⦄ := by
+  have _ := hslow
+  rw [Program.triple_iff]
+  rintro s ⟨rfl, hA32, hl, h_ascii, h_uncomp_pos, R, hmem⟩
+  unfold stringIndexOfProg
+  refine wp_check_le_65535 slow search_value
+    (stringIndexOfNoCheckProg str search_value out temp_len temp_offset temp_mask ymm_target ymm_match) _ s
+    fun hch_le st _ => ?_
+  exact (Program.triple_iff.mp
+    (stringIndexOfNoCheck_correct str search_value out temp_len temp_offset temp_mask ymm_target ymm_match
+      h_distinct h_ymm_diff c d hlab { s with status := st }))
+    { s with status := st }
+    ⟨rfl, hA32, hl, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
+
+theorem stringIndexOfAfterNoCheck_correct [Host]
     (str search_value start_idx out : Reg64)
     (temp_len temp_offset temp_mask : Reg64)
     (ymm_target ymm_match : AvxReg .W256)
@@ -7032,23 +6924,22 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
     (h_ymm_diff : ymm_target ≠ ymm_match)
     (c : BitVec 32) (d : List UInt8)
     (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
-    (hslow : ∀ (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match)),
-      IsSlowPathLabel (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H slow)
     (s₀ : MachineData) :
     ⦃ fun s => s = s₀ ∧ (s.regs.get64 str).toNat + 16 < 2 ^ 32 ∧
         d.length = strByteLen c ∧
+        (s.regs.get (Reg.low search_value Width.W32)).toNat ≤ 65535 ∧
         (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
         (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
         ∃ R, (StringAt (s.regs.get64 str) c d ⋆ R) s.dmem ⦄
-      (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match)
+      (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match)
     ⦃ fun _ => StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match
           (strChars c d) (s₀.regs.get (Reg.low search_value Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
-      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low search_value Width.W32)) s₀ pc s ⦄ := by
+      fun _ _ => False ⦄ := by
   rw [Program.triple_iff]
-  rintro s ⟨rfl, hA32, hl, h_ascii, h_uncomp_pos, R, hmem⟩
+  rintro s ⟨rfl, hA32, hl, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
   apply Program.wp_of_loop
   intro H
-  have h_prog_len : (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 121 := rfl
+  have h_prog_len : (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match).length = 119 := rfl
   change Program.Loop _ H _ _ ⟨s, Host.addrOf (H.start + 0)⟩
   let ch := BitVec.setWidth 32 (s.regs.get64 search_value)
   let fromIndex := BitVec.setWidth 32 (s.regs.get64 start_idx)
@@ -7085,54 +6976,25 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
   have hd_search_len_ne : (search_value = temp_len) = false := by simp [hd_search_len]
   have hd_search_offset_ne : (search_value = temp_offset) = false := by simp [hd_search_offset]
   have hd_search_rcx_ne : (search_value = Reg64.rcx) = false := by simp [hd_search_rcx]
-  by_cases h_ch : ch.toNat > 65535
-  · have hch_gt : ch.toNat > 65535 := h_ch
-    exact ret_slow_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
-      (strChars c d) fromIndex H s s ch hch_gt hch_def rfl rfl rfl (hslow H)
-  have h_ch_le : ch.toNat ≤ 65535 := by omega
-  have h_eq : ch = BitVec.ofNat 32 ch.toNat := by
-    apply BitVec.eq_of_toNat_eq
-    simp
-  have h_cf : (BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned) =
-      decide (ch.toNat < 65535) := by
-    conv => lhs; rw [h_eq]
-    exact cf_ofNat32 (x := ch.toNat) (c := 65535) ch.isLt (by decide)
-  have h_ja : (!BitVec.unsigned (ch - 65535#32) != ch.unsigned - (65535#32).unsigned &&
-      !(ch - 65535#32 == 0#32)) = false := by
-    by_cases h_lt : ch.toNat < 65535
-    · rw [h_cf, decide_eq_true_iff.mpr h_lt]
-      rfl
-    · have : ch.toNat = 65535 := by omega
-      have hch_val : ch = 65535#32 := by rw [h_eq, this]
-      rw [hch_val]
-      decide
-  -- Directive 0: cmp search_value, $0xFFFF
-  sstep
-  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
-  -- Directive 1: ja slow
-  sstep
-  have h_ch_subst : BitVec.setWidth 32 (s.regs.get64 search_value) = ch := rfl
-  rw [h_ch_subst, h_ja]
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
-  -- Directive 2: movl 8(str), temp_len
+  have h_ch_le : ch.toNat ≤ 65535 := by simpa [hch_def] using hch_le
+  -- Directive 0: movl 8(str), temp_len
   have cA := fun i (hi : i < 4) => sep_get_l hmem (stringAt_cnt (i := i) hi)
   sstep
   rw [load_count s.dmem (s.regs.get64 str) c cA]
   simp only [cnt_val]
-  refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
-  -- Directive 3: testl temp_len, temp_len
+  refine Program.loopCont_of_le (j := 1) (by rw [h_prog_len]; omega) ?_
+  -- Directive 1: testl temp_len, temp_len
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
-  -- Directive 4: je not_found
+  refine Program.loopCont_of_le (j := 2) (by rw [h_prog_len]; omega) ?_
+  -- Directive 2: je not_found
   sstep
   have h_and_self : (c &&& c == 0#32) = (c == 0#32) := by simp [BitVec.and_self]
   rw [h_and_self]
   by_cases hc0 : c = 0#32
   · rw [hc0, beq_self_eq_true]
-    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 118) rfl]
-    refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 116) rfl]
+    refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
     have hd_nil : d = [] := by
       have : d.length = 0 := by rw [hl, hc0]; rfl
       exact List.eq_nil_of_length_eq_zero this
@@ -7140,7 +7002,7 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       unfold strChars; rw [hd_nil]; rfl
     have hspec : indexOfSpec (strChars (0#32) d) ch fromIndex = -1#32 := by
       rw [hchars_nil, indexOfSpec_empty]
-    exact ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    exact ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ (strChars (0#32) d) ch fromIndex hspec rfl (by
         intro r hr_out
         simp only [get64_set64]
@@ -7149,19 +7011,19 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         · simp [h1]) (Or.inl rfl)
   rw [beq_eq_false_iff_ne.mpr hc0]
   simp only [Bool.false_eq_true, ↓reduceIte]
-  refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
-  -- Directive 5: movl temp_len, temp_mask
+  refine Program.loopCont_of_le (j := 3) (by rw [h_prog_len]; omega) ?_
+  -- Directive 3: movl temp_len, temp_mask
   sstep
-  refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
-  -- Directive 6: shrl $1, temp_len
+  refine Program.loopCont_of_le (j := 4) (by rw [h_prog_len]; omega) ?_
+  -- Directive 4: shrl $1, temp_len
   sstep
   intro af
   simp only [↓reduceIte, beq_self_eq_true]
-  refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
-  -- Directive 7: cmpl temp_len, start_idx
+  refine Program.loopCont_of_le (j := 5) (by rw [h_prog_len]; omega) ?_
+  -- Directive 5: cmpl temp_len, start_idx
   sstep
-  refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
-  -- Directive 8: jge not_found
+  refine Program.loopCont_of_le (j := 6) (by rw [h_prog_len]; omega) ?_
+  -- Directive 6: jge not_found
   sstep
   simp only [hd_start_len, hd_start_mask, hd_len_mask, ↓reduceIte]
   have hT_lt : (c >>> 1).toNat < 2 ^ 32 - 1 := shift_right_lt c
@@ -7177,8 +7039,8 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
   by_cases hge : v_ge = true
   · dsimp only [v_ge] at hge
     rw [hge]
-    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 118) rfl]
-    refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+    simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 116) rfl]
+    refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
     have hlen_eq : len_val = BitVec.ofNat 32 (c >>> 1).toNat := by
       dsimp [len_val]
       have : (c >>> 1).toNat < 2 ^ 32 := (c >>> 1).isLt
@@ -7194,7 +7056,7 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by omega)] at hjge
       exact hjge
     have hspec : indexOfSpec (strChars c d) ch fromIndex = -1#32 := indexOfSpec_ge hge_spec
-    refine ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+    refine ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
       h_distinct H s _ (strChars c d) ch fromIndex hspec rfl ?_ (Or.inl rfl)
     intro r hr_out
     simp only [get64_set64]
@@ -7211,30 +7073,30 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
   dsimp only [v_ge] at hnot_ge
   rw [hnot_ge]
   simp only [Bool.false_eq_true, ↓reduceIte]
+  refine Program.loopCont_of_le (j := 7) (by rw [h_prog_len]; omega) ?_
+  -- Directive 7: xorq temp_offset, temp_offset
+  sstep
+  intro _
+  refine Program.loopCont_of_le (j := 8) (by rw [h_prog_len]; omega) ?_
+  -- Directive 8: cmpl $0, start_idx
+  sstep
+  simp only [hd_start_offset, hd_start_len, hd_start_mask, ↓reduceIte]
   refine Program.loopCont_of_le (j := 9) (by rw [h_prog_len]; omega) ?_
-  -- Directive 9: xorq temp_offset, temp_offset
+  -- Directive 9: cmovg start_idx, temp_offset
   sstep
-  intro _
+  simp only [hd_start_offset, hd_start_len, hd_start_mask, ↓reduceIte]
   refine Program.loopCont_of_le (j := 10) (by rw [h_prog_len]; omega) ?_
-  -- Directive 10: cmpl $0, start_idx
+  -- Directive 10: movl temp_len, %ecx
   sstep
-  simp only [hd_start_offset, hd_start_len, hd_start_mask, ↓reduceIte]
   refine Program.loopCont_of_le (j := 11) (by rw [h_prog_len]; omega) ?_
-  -- Directive 11: cmovg start_idx, temp_offset
+  -- Directive 11: subl temp_offset, %ecx
   sstep
-  simp only [hd_start_offset, hd_start_len, hd_start_mask, ↓reduceIte]
   refine Program.loopCont_of_le (j := 12) (by rw [h_prog_len]; omega) ?_
-  -- Directive 12: movl temp_len, %ecx
-  sstep
-  refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
-  -- Directive 13: subl temp_offset, %ecx
-  sstep
-  refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
-  -- Directive 14: testl $1, temp_mask
+  -- Directive 12: testl $1, temp_mask
   sstep
   intro _
-  refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
-  -- Directive 15: jnz uncompressed_path
+  refine Program.loopCont_of_le (j := 13) (by rw [h_prog_len]; omega) ?_
+  -- Directive 13: jnz uncompressed_path
   sstep
   simp only [hd_mask_rcx, hd_mask_offset, hd_mask_len, Bool.false_eq_true, ↓reduceIte, sw32_64, lsb_and1 c, Bool.not_not]
 
@@ -7281,21 +7143,21 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
   by_cases h_comp : c.getLsbD 0 = false
   · rw [h_comp]
     simp only [Bool.not_false, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
-    -- Directive 16: cmpl $127, search_value
+    refine Program.loopCont_of_le (j := 14) (by rw [h_prog_len]; omega) ?_
+    -- Directive 14: cmpl $127, search_value
     sstep
     simp only [hd_search_rcx_ne, hd_search_offset_ne, hd_search_len_ne, hd_search_mask_ne, Bool.false_eq_true, ↓reduceIte]
-    refine Program.loopCont_of_le (j := 17) (by rw [h_prog_len]; omega) ?_
-    -- Directive 17: jg not_found
+    refine Program.loopCont_of_le (j := 15) (by rw [h_prog_len]; omega) ?_
+    -- Directive 15: jg not_found
     sstep
     by_cases h_ch127 : ch.toNat > 127
     · rw [jg_ch127_true h_ch127 h_ch_le]
-      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 118) rfl]
-      refine Program.loopCont_of_le (j := 118) (by rw [h_prog_len]; omega) ?_
+      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 116) rfl]
+      refine Program.loopCont_of_le (j := 116) (by rw [h_prog_len]; omega) ?_
       have h_ascii' := strChars_compressed_ascii h_comp hl (h_ascii h_comp)
       have hspec : indexOfSpec (strChars c d) ch fromIndex = -1#32 :=
         indexOfSpec_compressed_gt127 h_ascii' h_ch127
-      exact ret_not_found_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      exact ret_not_found_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct H s _ (strChars c d) ch fromIndex hspec rfl (by
           intro r' hr_out
           simp only [get64_set64]
@@ -7311,11 +7173,11 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
     · have h_ch127_le : ch.toNat ≤ 127 := by omega
       rw [jg_ch127_false h_ch127_le]
       simp only [Bool.false_eq_true, ↓reduceIte]
-      refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
-      -- Directive 18: cmpl $32, temp_len
+      refine Program.loopCont_of_le (j := 16) (by rw [h_prog_len]; omega) ?_
+      -- Directive 16: cmpl $32, temp_len
       sstep
-      refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
-      -- Directive 19: jb compressed_scalar_loop
+      refine Program.loopCont_of_le (j := 17) (by rw [h_prog_len]; omega) ?_
+      -- Directive 17: jb compressed_scalar_loop
       sstep
       simp only [get64_set64, sw32_64, hd_len_rcx', hd_len_offset', hd_len_mask', hd_search_len_ne, Bool.false_eq_true, ↓reduceIte]
       have h_eq : c.ushiftRight 1 = BitVec.ofNat 32 (c >>> 1).toNat := by
@@ -7328,8 +7190,8 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         exact cf_ofNat32 (x := (c >>> 1).toNat) (c := 32) (c >>> 1).isLt (by decide)
       by_cases hT32 : (c >>> 1).toNat < 32
       · rw [h_cf, decide_eq_true_iff.mpr hT32]
-        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 54) rfl]
-        refine Program.loopCont_of_le (j := 54) (by rw [h_prog_len]; omega) ?_
+        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 52) rfl]
+        refine Program.loopCont_of_le (j := 52) (by rw [h_prog_len]; omega) ?_
         have hinfo := string_info_of hmem hl
         have h_byte_len : strByteLen c = (c >>> 1).toNat := by
           unfold strByteLen; rw [h_comp]; simp
@@ -7345,7 +7207,7 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         have h_chars_drop : ∀ (i : Nat) (hi : i < from_k - from_k),
             (((strChars c d).drop from_k).get ⟨i, by rw [List.length_drop, h_len_eq]; omega⟩).zeroExtend 32 ≠ ch := by
           intro i hi; omega
-        refine compressed_scalar_loop_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        refine compressed_scalar_loop_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl h_data h_some ch h_ch127_le
           (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq m from_k _ rfl ?_ (Or.inl rfl) ?_ ?_ ?_ h_km (by omega) h_chars_drop
         · intro r' hr'
@@ -7366,17 +7228,17 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
           rw [hm1]
       · rw [h_cf, decide_eq_false_iff_not.mpr hT32]
         simp only [Bool.false_eq_true, ↓reduceIte]
+        refine Program.loopCont_of_le (j := 18) (by rw [h_prog_len]; omega) ?_
+        -- Directive 18: vmovd search_value, ymm_match
+        sstep
+        refine Program.loopCont_of_le (j := 19) (by rw [h_prog_len]; omega) ?_
+        -- Directive 19: vpbroadcastb ymm_match, ymm_target
+        sstep
         refine Program.loopCont_of_le (j := 20) (by rw [h_prog_len]; omega) ?_
-        -- Directive 20: vmovd search_value, ymm_match
+        -- Directive 20: cmpl $32, %ecx
         sstep
         refine Program.loopCont_of_le (j := 21) (by rw [h_prog_len]; omega) ?_
-        -- Directive 21: vpbroadcastb ymm_match, ymm_target
-        sstep
-        refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
-        -- Directive 22: cmpl $32, %ecx
-        sstep
-        refine Program.loopCont_of_le (j := 23) (by rw [h_prog_len]; omega) ?_
-        -- Directive 23: jb compressed_tail
+        -- Directive 21: jb compressed_tail
         sstep
         simp only [get64_set64, sw32_64, hd_offset_rcx, hd_offset_len, hd_offset_mask',
           hd_len_rcx', hd_len_offset', hd_len_mask',
@@ -7408,9 +7270,9 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         have hT32_le : 32 ≤ (c >>> 1).toNat := by omega
         by_cases hr32 : r < 32
         · rw [h_cf_r, decide_eq_true_iff.mpr hr32]
-          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 33) rfl]
-          refine Program.loopCont_of_le (j := 33) (by rw [h_prog_len]; omega) ?_
-          refine compressed_tail_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+          simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 31) rfl]
+          refine Program.loopCont_of_le (j := 31) (by rw [h_prog_len]; omega) ?_
+          refine compressed_tail_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
             h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT32_le h_data h_some ch h_ch127_le
             (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq _ rfl ?_ ?_ ?_ r hr32 ?_ ?_ h_from_le hpre_empty ?_
           · intro r' hr'
@@ -7437,9 +7299,9 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
             rw [hch_sub, bcastb_eq]
         · rw [h_cf_r, decide_eq_false_iff_not.mpr hr32]
           simp only [Bool.false_eq_true, ↓reduceIte]
-          refine Program.loopCont_of_le (j := 24) (by rw [h_prog_len]; omega) ?_
+          refine Program.loopCont_of_le (j := 22) (by rw [h_prog_len]; omega) ?_
           have hr32_le : 32 ≤ r := by omega
-          refine compressed_avx_loop_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+          refine compressed_avx_loop_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
             h_distinct h_ymm_diff hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT32_le h_data h_some ch h_ch127_le
             (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq
             r from_k _ rfl ?_ ?_ ?_ ?_ ?_ h_rk hr32_le (by omega) (by intro i hi; omega)
@@ -7464,15 +7326,15 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       revert h_comp
       cases c.getLsbD 0 <;> decide
     rw [h_uncomp]
-    simp only [Bool.not_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 65) rfl]
+    simp only [Bool.not_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 63) rfl]
+    refine Program.loopCont_of_le (j := 63) (by rw [h_prog_len]; omega) ?_
+    -- Directive 63: .label uncompressed_path
+    sstep
+    refine Program.loopCont_of_le (j := 64) (by rw [h_prog_len]; omega) ?_
+    -- Directive 64: cmpl $16, temp_len
+    sstep
     refine Program.loopCont_of_le (j := 65) (by rw [h_prog_len]; omega) ?_
-    -- Directive 65: .label uncompressed_path
-    sstep
-    refine Program.loopCont_of_le (j := 66) (by rw [h_prog_len]; omega) ?_
-    -- Directive 66: cmpl $16, temp_len
-    sstep
-    refine Program.loopCont_of_le (j := 67) (by rw [h_prog_len]; omega) ?_
-    -- Directive 67: jb uncompressed_scalar_loop
+    -- Directive 65: jb uncompressed_scalar_loop
     sstep
     simp only [get64_set64, sw32_64, hd_len_rcx', hd_len_offset', hd_len_mask', hd_search_len_ne, Bool.false_eq_true, ↓reduceIte]
     have h_eq : c.ushiftRight 1 = BitVec.ofNat 32 (c >>> 1).toNat := by
@@ -7485,8 +7347,8 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       exact cf_ofNat32 (x := (c >>> 1).toNat) (c := 16) (c >>> 1).isLt (by decide)
     by_cases hT16 : (c >>> 1).toNat < 16
     · rw [h_cf, decide_eq_true_iff.mpr hT16]
-      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 105) rfl]
-      refine Program.loopCont_of_le (j := 105) (by rw [h_prog_len]; omega) ?_
+      simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 103) rfl]
+      refine Program.loopCont_of_le (j := 103) (by rw [h_prog_len]; omega) ?_
       have hinfo := string_info_of hmem hl
       have h_byte_len : strByteLen c = 2 * (c >>> 1).toNat := by
         unfold strByteLen; rw [h_uncomp]; simp
@@ -7503,7 +7365,7 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       have h_chars_drop : ∀ (i : Nat) (hi : i < from_k - from_k),
           (((strChars c d).drop from_k).get ⟨i, by rw [List.length_drop, h_len_eq]; omega⟩).zeroExtend 32 ≠ ch := by
         intro i hi; omega
-      refine uncompressed_scalar_loop_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      refine uncompressed_scalar_loop_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
         h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl h_data h_some ch h_ch_le
         (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq m from_k _ rfl ?_ (Or.inl rfl) ?_ ?_ ?_ h_km (by omega) h_chars_drop
       · intro r' hr'
@@ -7524,17 +7386,17 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         rw [hm1]
     · rw [h_cf, decide_eq_false_iff_not.mpr hT16]
       simp only [Bool.false_eq_true, ↓reduceIte]
+      refine Program.loopCont_of_le (j := 66) (by rw [h_prog_len]; omega) ?_
+      -- Directive 66: vmovd search_value, ymm_match
+      sstep
+      refine Program.loopCont_of_le (j := 67) (by rw [h_prog_len]; omega) ?_
+      -- Directive 67: vpbroadcastw ymm_match, ymm_target
+      sstep
       refine Program.loopCont_of_le (j := 68) (by rw [h_prog_len]; omega) ?_
-      -- Directive 68: vmovd search_value, ymm_match
+      -- Directive 68: cmpl $16, %ecx
       sstep
       refine Program.loopCont_of_le (j := 69) (by rw [h_prog_len]; omega) ?_
-      -- Directive 69: vpbroadcastw ymm_match, ymm_target
-      sstep
-      refine Program.loopCont_of_le (j := 70) (by rw [h_prog_len]; omega) ?_
-      -- Directive 70: cmpl $16, %ecx
-      sstep
-      refine Program.loopCont_of_le (j := 71) (by rw [h_prog_len]; omega) ?_
-      -- Directive 71: jb uncompressed_tail
+      -- Directive 69: jb uncompressed_tail
       sstep
       simp only [get64_set64, sw32_64, hd_offset_rcx, hd_offset_len, hd_offset_mask',
         hd_len_rcx', hd_len_offset', hd_len_mask',
@@ -7567,9 +7429,9 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
       have hT16_le : 16 ≤ (c >>> 1).toNat := by omega
       by_cases hr16 : r < 16
       · rw [h_cf_r, decide_eq_true_iff.mpr hr16]
-        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 81) rfl]
-        refine Program.loopCont_of_le (j := 81) (by rw [h_prog_len]; omega) ?_
-        refine uncompressed_tail_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        simp only [↓reduceIte, addrOf_label hlab (H := H) (i := 79) rfl]
+        refine Program.loopCont_of_le (j := 79) (by rw [h_prog_len]; omega) ?_
+        refine uncompressed_tail_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT16_le h_data h_some ch h_ch_le
           (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq _ rfl ?_ ?_ ?_ r hr16 ?_ ?_ h_from_le hpre_empty ?_
         · intro r' hr'
@@ -7596,9 +7458,9 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
           rw [hch_sub, bcastw_eq]
       · rw [h_cf_r, decide_eq_false_iff_not.mpr hr16]
         simp only [Bool.false_eq_true, ↓reduceIte]
-        refine Program.loopCont_of_le (j := 72) (by rw [h_prog_len]; omega) ?_
+        refine Program.loopCont_of_le (j := 70) (by rw [h_prog_len]; omega) ?_
         have hr16_le : 16 ≤ r := by omega
-        refine uncompressed_avx_loop_lemma_after slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+        refine uncompressed_avx_loop_lemma_after str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
           h_distinct h_ymm_diff hlab H s c d (s.regs.get64 str) (c >>> 1).toNat rfl rfl hT16_le h_data h_some ch h_ch_le
           (strChars c d) h_len_eq h_chars fromIndex from_k h_from_eq
           r from_k _ rfl ?_ ?_ ?_ ?_ ?_ h_rk hr16_le (by omega) (by intro i hi; omega)
@@ -7619,6 +7481,40 @@ theorem stringIndexOfAfter_correct [Host] (slow : Label)
         · simp only [get64_set64, sw32_64, hd_offset_rcx, hd_offset_len, hd_offset_mask', hd_len_rcx', hd_len_offset', hd_len_mask',
             Bool.false_eq_true, BitVec.xor_self, BitVec.setWidth_zero, ↓reduceIte]
 
+
+/-- Correctness of the checked AVX2 `String.indexOf(ch, fromIndex)` lowering. -/
+theorem stringIndexOfAfter_correct [Host] (slow : Label)
+    (str search_value start_idx out : Reg64)
+    (temp_len temp_offset temp_mask : Reg64)
+    (ymm_target ymm_match : AvxReg .W256)
+    (h_distinct : [str, search_value, start_idx, out, Reg64.rcx, temp_len, temp_offset, temp_mask].Nodup)
+    (h_ymm_diff : ymm_target ≠ ymm_match)
+    (c : BitVec 32) (d : List UInt8)
+    (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
+    (hslow : ∀ (H : Embedding (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match)),
+      IsSlowPathLabel (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) H slow)
+    (s₀ : MachineData) :
+    ⦃ fun s => s = s₀ ∧ (s.regs.get64 str).toNat + 16 < 2 ^ 32 ∧
+        d.length = strByteLen c ∧
+        (c.getLsbD 0 = false → ∀ b ∈ d, b < 0x80) ∧
+        (c.getLsbD 0 = true → 0 < (c >>> 1).toNat) ∧
+        ∃ R, (StringAt (s.regs.get64 str) c d ⋆ R) s.dmem ⦄
+      (stringIndexOfAfterProg slow str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match)
+    ⦃ fun _ => StringIndexOfPost out [Reg64.rcx, temp_len, temp_offset, temp_mask] ymm_target ymm_match
+          (strChars c d) (s₀.regs.get (Reg.low search_value Width.W32)) (s₀.regs.get (Reg.low start_idx Width.W32)) s₀;
+      fun pc s => StringIndexOfSlow slow (s₀.regs.get (Reg.low search_value Width.W32)) s₀ pc s ⦄ := by
+  have _ := hslow
+  rw [Program.triple_iff]
+  rintro s ⟨rfl, hA32, hl, h_ascii, h_uncomp_pos, R, hmem⟩
+  unfold stringIndexOfAfterProg
+  refine wp_check_le_65535 slow search_value
+    (stringIndexOfAfterNoCheckProg str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match) _ s
+    fun hch_le st _ => ?_
+  exact (Program.triple_iff.mp
+    (stringIndexOfAfterNoCheck_correct str search_value start_idx out temp_len temp_offset temp_mask ymm_target ymm_match
+      h_distinct h_ymm_diff c d hlab { s with status := st }))
+    { s with status := st }
+    ⟨rfl, hA32, hl, hch_le, h_ascii, h_uncomp_pos, R, hmem⟩
 
 end Proof
 
