@@ -82,62 +82,58 @@ Uses vector register `ymm` and core registers `str`, `arg`, `n`, `off`, `out`.
     cmpl 8(%❰arg❱), %❰.low n .W32❱
     jne return_false
 
-    # 3. If count == 0 return true
-    testl %❰.low n .W32❱, %❰.low n .W32❱
-    je return_true
-
-    # 4. Convert count to byte length n: if bit 0 is 1 (uncompressed) then n &= ~1 else n >>= 1
-    testl $1, %❰.low n .W32❱
-    jne uncompressed
+    # 3. Empty check and conversion of count_ to byte length n:
+    #    count >> 1 == 0 means empty; CF == 0 means compressed (byte len = count >> 1),
+    #    CF == 1 means uncompressed (byte len = 2 * (count >> 1)).
     shrl $1, %❰.low n .W32❱
-    jmp len_done
-  uncompressed:
-    andl $-2, %❰.low n .W32❱
-  len_done:
+    je return_true
+    jnc compressed
+    addl %❰.low n .W32❱, %❰.low n .W32❱
+  compressed:
 
-    # 5. off = 0
-    xorq %❰.low off .W64❱, %❰.low off .W64❱
-
-    # 6. Check if n >= 32
+    # 4. off = 0; if n >= 32 go to AVX2 path
+    xorl %❰.low off .W32❱, %❰.low off .W32❱
     cmpl $32, %❰.low n .W32❱
-    jb short
+    jae avx_entry
 
-  # 7. AVX loop: compare 32 bytes per iteration
+  # 5. Short strings (1..31 bytes): compare qwords without touching YMM registers
+  short_loop:
+    movq 16(%❰str❱,%❰off❱,1), %❰.low out .W64❱
+    cmpq 16(%❰arg❱,%❰off❱,1), %❰.low out .W64❱
+    jne return_false
+    addl $8, %❰.low off .W32❱
+    subl $8, %❰.low n .W32❱
+    ja short_loop
+
+  return_true:
+    movl $1, %❰.low out .W32❱
+    jmp end
+
+  # 6. Long strings (>= 32 bytes): n becomes (byte_len - 32), the offset of the overlapping tail
+  avx_entry:
+    subl $32, %❰.low n .W32❱
+    je avx_tail
+
   avx_loop:
     vmovdqu 16(%❰str❱,%❰off❱,1), %❰ymm❱
     vpcmpeqb 16(%❰arg❱,%❰off❱,1), %❰ymm❱, %❰ymm❱
     vpmovmskb %❰ymm❱, %❰.low out .W32❱
     cmpl $-1, %❰.low out .W32❱
-    jne return_false_vzero
-    addq $32, %❰.low off .W64❱
-    subl $32, %❰.low n .W32❱
-    cmpl $32, %❰.low n .W32❱
-    jae avx_loop
+    jne vzero_exit
+    addl $32, %❰.low off .W32❱
+    cmpl %❰.low n .W32❱, %❰.low off .W32❱
+    jb avx_loop
 
-  # 8. Short tail: qwords remaining = (n + 7) / 8
-  short:
-    addl $7, %❰.low n .W32❱
-    shrl $3, %❰.low n .W32❱
-    je return_true_vzero
+  avx_tail:
+    vmovdqu 16(%❰str❱,%❰n❱,1), %❰ymm❱
+    vpcmpeqb 16(%❰arg❱,%❰n❱,1), %❰ymm❱, %❰ymm❱
+    vpmovmskb %❰ymm❱, %❰.low out .W32❱
+    cmpl $-1, %❰.low out .W32❱
 
-  qword_loop:
-    movq 16(%❰str❱,%❰off❱,1), %❰.low out .W64❱
-    cmpq 16(%❰arg❱,%❰off❱,1), %❰.low out .W64❱
-    jne return_false_vzero
-    addq $8, %❰.low off .W64❱
-    subl $1, %❰.low n .W32❱
-    jne qword_loop
-
-  # 9. Return true with vzeroupper
-  return_true_vzero:
+  vzero_exit:
     vzeroupper
-  return_true:
-    movl $1, %❰.low out .W32❱
-    jmp end
+    je return_true
 
-  # 10. Return false with vzeroupper
-  return_false_vzero:
-    vzeroupper
   return_false:
     xorl %❰.low out .W32❱, %❰.low out .W32❱
   end:
@@ -502,9 +498,9 @@ theorem ret_true (hno : n ≠ out) (hfo : off ≠ out) (hnf : n ≠ off) (hlab :
     (hz : t.zmms = s.zmms ∨ ∃ w, t.zmms = (s.zmms.set ymm w).zeroUpper) :
     Program.Loop (stringEqualsProg str arg n off out ymm) H
       (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-      ⟨t, Host.addrOf (H.start + 40)⟩ := by
+      ⟨t, Host.addrOf (H.start + 20)⟩ := by
   sstep; cont; sstep; cont; sstep
-  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 47) rfl]
+  simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 45) rfl]
   cont; sstep; cont
   exact Program.loop_done (post_of hno hfo hnf _ (by simp [hb]) hm hr hz _)
 
@@ -515,7 +511,7 @@ theorem ret_false (hno : n ≠ out) (hfo : off ≠ out) (hnf : n ≠ off) (_hlab
     (hz : t.zmms = s.zmms ∨ ∃ w, t.zmms = (s.zmms.set ymm w).zeroUpper) :
     Program.Loop (stringEqualsProg str arg n off out ymm) H
       (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-      ⟨t, Host.addrOf (H.start + 45)⟩ := by
+      ⟨t, Host.addrOf (H.start + 43)⟩ := by
   sstep; cont; sstep; intro _; cont; sstep; cont
   exact Program.loop_done (post_of hno hfo hnf _ (by simp [hb]) hm hr hz _)
 
@@ -527,27 +523,44 @@ theorem zmms_vzero_ok (h_ymm : ymm.base ∈ lowMm) {s t : MachineData}
   · exact Or.inr ⟨s.zmms.get ymm, by rw [h, zeroUpper_set_get _ _ h_ymm]⟩
   · exact Or.inr ⟨v, by rw [h]⟩
 
-theorem ret_true_vzero (hno : n ≠ out) (hfo : off ≠ out) (hnf : n ≠ off) (h_ymm : ymm.base ∈ lowMm)
+theorem vzero_exit (hno : n ≠ out) (hfo : off ≠ out) (hnf : n ≠ off)
     (hlab : LabelsPlaced)
     (H : Embedding (stringEqualsProg str arg n off out ymm)) (s t : MachineData)
-    (hb : stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂ = true)
-    (ht : Frame n off out ymm s t) :
+    (hzf : t.status.zf = stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂)
+    (hm : t.dmem = s.dmem) (hr : ∀ r, r ∉ [n, off, out] → t.regs.get64 r = s.regs.get64 r)
+    (hz : ∃ w, t.zmms = s.zmms.set ymm w) :
     Program.Loop (stringEqualsProg str arg n off out ymm) H
       (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-      ⟨t, Host.addrOf (H.start + 38)⟩ := by
-  sstep; cont; sstep; cont
-  exact ret_true hno hfo hnf hlab H s _ hb ht.1 ht.2.1 (zmms_vzero_ok h_ymm ht.2.2)
+      ⟨t, Host.addrOf (H.start + 40)⟩ := by
+  obtain ⟨w, hw⟩ := hz
+  sstep; cont; sstep; cont; sstep
+  by_cases hzf' : t.status.zf = true
+  · simp only [hzf', ↓reduceIte, addrOf_label hlab (H := H) (i := 20) rfl]
+    cont
+    exact ret_true hno hfo hnf hlab H s _ (hzf ▸ hzf') hm hr (Or.inr ⟨w, by rw [hw]⟩)
+  · simp only [Bool.not_eq_true] at hzf'
+    simp only [hzf', Bool.false_eq_true, ↓reduceIte]
+    cont
+    exact ret_false hno hfo hnf hlab H s _ (hzf ▸ hzf') hm hr (Or.inr ⟨w, by rw [hw]⟩)
 
-theorem ret_false_vzero (hno : n ≠ out) (hfo : off ≠ out) (hnf : n ≠ off) (h_ymm : ymm.base ∈ lowMm)
-    (hlab : LabelsPlaced)
-    (H : Embedding (stringEqualsProg str arg n off out ymm)) (s t : MachineData)
-    (hb : stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂ = false)
-    (ht : Frame n off out ymm s t) :
-    Program.Loop (stringEqualsProg str arg n off out ymm) H
-      (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-      ⟨t, Host.addrOf (H.start + 43)⟩ := by
-  sstep; cont; sstep; cont
-  exact ret_false hno hfo hnf hlab H s _ hb ht.1 ht.2.1 (zmms_vzero_ok h_ymm ht.2.2)
+omit [Host] in
+theorem sub_ofNat32_eq_zero {r c : Nat} (hr : r < 2 ^ 32) (hc : c < 2 ^ 32) :
+    (BitVec.ofNat 32 r - BitVec.ofNat 32 c == 0#32) = decide (r = c) := by
+  by_cases h : r = c
+  · subst h; simp
+  · have hne : BitVec.ofNat 32 r ≠ BitVec.ofNat 32 c := fun h' => h (by
+      have := congrArg BitVec.toNat h'
+      simp [Nat.mod_eq_of_lt hr, Nat.mod_eq_of_lt hc] at this
+      exact this)
+    rw [sub_beq_zero, beq_eq_false_iff_ne.mpr hne]
+    simp [h]
+
+omit [Host] in
+theorem sw64_ofNat32 {x : Nat} (hx : x < 2 ^ 32) :
+    (BitVec.ofNat 32 x).setWidth 64 = BitVec.ofNat 64 x := by
+  apply BitVec.eq_of_toNat_eq
+  simp only [BitVec.toNat_setWidth, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hx]
+
 set_option hygiene false in
 macro "rs" : tactic => `(tactic| try simp only [h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, Ne.symm h1,
   Ne.symm h2, Ne.symm h3, Ne.symm h4, Ne.symm h5, Ne.symm h6, Ne.symm h7, Ne.symm h8, Ne.symm h9,
@@ -565,111 +578,16 @@ structure Strings (s : MachineData) (str arg : Reg64) (c₁ c₂ : BitVec 32) (d
   hTrue : (∀ i < T, byteAt s.dmem A i = byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = true
   hFalse : (∃ i < T, byteAt s.dmem A i ≠ byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = false
 
-theorem qword (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ lowMm)
-    (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
-    (s : MachineData) (A B : BitVec 64) (T : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T) :
-    ∀ m k (t : MachineData), Frame n off out ymm s t →
-      t.regs.get64 off = .ofNat 64 k → (t.regs.get64 n).setWidth 32 = .ofNat 32 m → 0 < m →
-      k + 8 * m = T → (∀ i < k, byteAt s.dmem A i = byteAt s.dmem B i) →
-      Program.Loop (stringEqualsProg str arg n off out ymm) H
-        (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-        ⟨t, Host.addrOf (H.start + 31)⟩ := by
-  simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at h_distinct
-  obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := h_distinct
-  obtain ⟨hA, hB, hT, hsA, hsB, hTrue, hFalse⟩ := hS
-  subst hA hB
-  intro m
-  induction m with
-  | zero => intro _ _ _ _ _ h; omega
-  | succ m ih =>
-  intro k t ht hoff hn _ hk hpre
-  have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
-  have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
-  sstep; cont; sstep
-  rw [hstr, hoff, ht.1, load_chunk _ _ k 8 T hsA (by omega)]
-  simp only []
-  cont; sstep
-  rs
-  rw [load_chunk _ _ k 8 T hsB (by omega)]
-  simp only []
-  cont; sstep
-  by_cases heq : ∀ j < 8, byteAt s.dmem (s.regs.get64 str) (k + j) = byteAt s.dmem (s.regs.get64 arg) (k + j)
-  · rw [(chunk_eq_iff s.dmem _ _ k 8 64 rfl).mpr heq]
-    simp only [BitVec.sub_self, beq_self_eq_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    cont; sstep; rs
-    simp only [ofNat_add_lit]
-    cont; sstep; rs
-    cont; sstep
-    simp only [hn, ofNat_succ_sub_one, ofNat32_eq_zero (show m < 2 ^ 32 by omega)]
-    by_cases hm0 : m = 0
-    · simp only [hm0, beq_self_eq_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-      cont
-      refine ret_true_vzero h9 h10 h8 h_ymm hlab H s _ (hTrue fun i hi => ?_) (by frame_tac)
-      by_cases hik : i < k
-      · exact hpre i hik
-      · have := heq (i - k) (by omega)
-        rwa [Nat.add_sub_cancel' (by omega)] at this
-    · simp only [beq_eq_false_iff_ne.mpr hm0, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 31) rfl]
-      cont
-      refine ih (k + 8) _ (by frame_tac) (by rs) (by rs) (by omega) (by omega) fun i hi => ?_
-      by_cases hik : i < k
-      · exact hpre i hik
-      · have := heq (i - k) (by omega)
-        rwa [Nat.add_sub_cancel' (by omega)] at this
-  · have hne := mt (chunk_eq_iff s.dmem _ _ k 8 64 rfl).mp heq
-    simp only [sub_beq_zero, beq_eq_false_iff_ne.mpr hne, Bool.not_false,
-      ↓reduceIte, addrOf_label hlab (H := H) (i := 43) rfl]
-    cont
-    refine ret_false_vzero h9 h10 h8 h_ymm hlab H s _ (hFalse ?_) (by frame_tac)
-    refine Classical.byContradiction fun hc => heq fun j hj => ?_
-    exact Classical.byContradiction fun hne' => hc ⟨k + j, by omega, hne'⟩
-theorem short (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ lowMm)
-    (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
-    (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
-    (hTL : T = L + padBytes L) :
-    ∀ k r (t : MachineData), Frame n off out ymm s t →
-      t.regs.get64 off = .ofNat 64 k → (t.regs.get64 n).setWidth 32 = .ofNat 32 r →
-      k + r = L → r < 32 → k % 8 = 0 → (∀ i < k, byteAt s.dmem A i = byteAt s.dmem B i) →
-      Program.Loop (stringEqualsProg str arg n off out ymm) H
-        (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-        ⟨t, Host.addrOf (H.start + 27)⟩ := by
-  have hd := h_distinct
-  simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
-  obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
-  have hS' := hS
-  obtain ⟨hA, hB, -, -, -, hTrue, -⟩ := hS'
-  subst hA hB
-  intro k r t ht hoff hn hkr hr hk8 hpre
-  have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
-  have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
-  sstep; cont; sstep; rs
-  simp only [hn, ofNat32_add_lit]
-  cont; sstep; rs
-  intro _ _
-  cont; sstep
-  simp only [ofNat32_ushiftRight (show 7 + r < 2 ^ 32 by omega),
-    ofNat32_eq_zero (show (7 + r) / 2 ^ 3 < 2 ^ 32 by omega)]
-  by_cases hm : (7 + r) / 2 ^ 3 = 0
-  · simp only [hm, beq_self_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 38) rfl]
-    cont
-    refine ret_true_vzero h9 h10 h8 h_ymm hlab H s _ (hTrue fun i hi => ?_) (by frame_tac)
-    have : padBytes L = 0 := by simp only [padBytes]; omega
-    exact hpre i (by omega)
-  · simp only [beq_eq_false_iff_ne.mpr hm, Bool.false_eq_true, ↓reduceIte]
-    cont
-    refine qword h_distinct h_ymm hlab H s _ _ T hS ((7 + r) / 2 ^ 3) k _ (by frame_tac) (by rs)
-      (by rs) (by omega) (by simp only [hTL, padBytes]; omega) hpre
-theorem avx (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ lowMm)
+theorem short (h_distinct : [str, arg, n, off, out].Nodup)
     (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
     (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
     (hTL : T = L + padBytes L) (hL : L < 2 ^ 32) :
-    ∀ r k (t : MachineData), Frame n off out ymm s t →
+    ∀ r k (t : MachineData), Frame n off out ymm s t → t.zmms = s.zmms →
       t.regs.get64 off = .ofNat 64 k → (t.regs.get64 n).setWidth 32 = .ofNat 32 r →
-      k + r = L → 32 ≤ r → k % 8 = 0 → (∀ i < k, byteAt s.dmem A i = byteAt s.dmem B i) →
+      0 < r → r < 32 → k + r = L → k % 8 = 0 → (∀ i < k, byteAt s.dmem A i = byteAt s.dmem B i) →
       Program.Loop (stringEqualsProg str arg n off out ymm) H
         (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-        ⟨t, Host.addrOf (H.start + 17)⟩ := by
+        ⟨t, Host.addrOf (H.start + 13)⟩ := by
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
@@ -679,14 +597,150 @@ theorem avx (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ l
   intro r
   induction r using Nat.strongRecOn with
   | _ r ih =>
-  intro k t ht hoff hn hkr hr hk8 hpre
+  intro k t ht hzm hoff hn hr0 hr32 hkr hk8 hpre
   have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
   have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
+  have hkT : k + 8 ≤ T := by
+    have hmod : (k + r) % 8 = r % 8 := by omega
+    have : k + 8 ≤ L + padBytes L := by rw [← hkr, padBytes, hmod]; omega
+    exact hTL ▸ this
+  sstep; cont; sstep
+  rw [hstr, hoff, ht.1, load_chunk _ _ k 8 T hsA hkT]
+  simp only []
+  cont; sstep
+  rs
+  rw [load_chunk _ _ k 8 T hsB hkT]
+  simp only []
+  cont; sstep
+  by_cases heq : ∀ j < 8, byteAt s.dmem (s.regs.get64 str) (k + j) = byteAt s.dmem (s.regs.get64 arg) (k + j)
+  · rw [(chunk_eq_iff s.dmem _ _ k 8 64 rfl).mpr heq]
+    simp only [BitVec.sub_self, beq_self_eq_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    cont; sstep; rs
+    simp only [ofNat32_add_lit, Nat.add_comm 8 k]
+    cont; sstep; rs
+    simp only [hn, sub_ofNat32_eq_zero (show r < 2 ^ 32 by omega) (show 8 < 2 ^ 32 by decide),
+      cf_ofNat32 (show r < 2 ^ 32 by omega) (show 8 < 2 ^ 32 by decide)]
+    cont; sstep
+    by_cases hr8 : 8 < r
+    · have hrnlt : ¬(r < 8) := by omega
+      have hrneq : ¬(r = 8) := by omega
+      simp only [hrnlt, hrneq, decide_false, Bool.not_false, Bool.and_self, ↓reduceIte,
+        addrOf_label hlab (H := H) (i := 13) rfl]
+      cont
+      refine ih (r - 8) (by omega) (k + 8) _ (by frame_tac) hzm
+        (by rs; exact sw64_ofNat32 (by omega))
+        (by rs; rw [ofNat32_sub_lit (by omega)])
+        (by omega) (by omega) (by omega) (by omega) (prefix_ext hpre heq)
+    · have hle : r ≤ 8 := by omega
+      have hcond : (!(decide (r < 8)) && !(decide (r = 8))) = false := by
+        rcases Nat.lt_or_eq_of_le hle with hlt | rfl <;> simp [*]
+      simp only [hcond, Bool.false_eq_true, ↓reduceIte]
+      cont
+      refine ret_true h9 h10 h8 hlab H s _ (hTrue fun i hi => ?_) rfl (fun r' hr' => ?_) (Or.inl hzm)
+      · by_cases hik : i < k
+        · exact hpre i hik
+        · have : i - k < 8 := by simp only [hTL, padBytes] at hi; omega
+          have := heq (i - k) this
+          rwa [Nat.add_sub_cancel' (by omega)] at this
+      · simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr'
+        simp only [get64_set64, hr'.1, hr'.2.1, hr'.2.2, ↓reduceIte]
+        exact ht.2.1 r' (by simp [hr'])
+  · have hne := mt (chunk_eq_iff s.dmem _ _ k 8 64 rfl).mp heq
+    simp only [sub_beq_zero, beq_eq_false_iff_ne.mpr hne, Bool.not_false,
+      ↓reduceIte, addrOf_label hlab (H := H) (i := 43) rfl]
+    cont
+    refine ret_false h9 h10 h8 hlab H s _ (hFalse ?_) rfl (fun r' hr' => ?_) (Or.inl hzm)
+    · refine Classical.byContradiction fun hc => heq fun j hj => ?_
+      exact Classical.byContradiction fun hne' => hc ⟨k + j, by omega, hne'⟩
+    · simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr'
+      simp only [get64_set64, hr'.2.2, ↓reduceIte]
+      exact ht.2.1 r' (by simp [hr'])
+
+omit [Host] in
+private theorem zmms_set_ok {s t : MachineData} (ht : Frame n off out ymm s t) (v : BitVec 256) :
+    ∃ w, t.zmms.set ymm v = s.zmms.set ymm w := by
+  rcases ht.2.2 with h | ⟨w, h⟩ <;> exact ⟨v, by simp [h, zmms_set_set]⟩
+
+theorem avx_tail (h_distinct : [str, arg, n, off, out].Nodup)
+    (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
+    (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
+    (hTrueL : (∀ i < L, byteAt s.dmem A i = byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = true)
+    (hTL : T = L + padBytes L) (h32 : 32 ≤ L) (hL : L < 2 ^ 32)
+    (t : MachineData) (ht : Frame n off out ymm s t)
+    (hn : t.regs.get64 n = .ofNat 64 (L - 32))
+    (hpre : ∀ i < L - 32, byteAt s.dmem A i = byteAt s.dmem B i) :
+    Program.Loop (stringEqualsProg str arg n off out ymm) H
+      (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 35)⟩ := by
+  have hd := h_distinct
+  simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+  obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
+  have hS' := hS
+  obtain ⟨hA, hB, hT, hsA, hsB, -, hFalse⟩ := hS'
+  subst hA hB
+  have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
+  have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
+  have hkT : (L - 32) + 32 ≤ T := by simp only [hTL, padBytes]; omega
+  sstep; cont; sstep
+  rw [hstr, hn, ht.1, load_chunk _ _ (L - 32) 32 T hsA hkT]
+  simp only []
+  cont; sstep
+  rw [harg, hn, load_chunk _ _ (L - 32) 32 T hsB hkT]
+  simp only []
+  cont; sstep; cont; sstep; rs
+  simp only [sw_m1, sub_beq_zero]
+  cont
+  by_cases heq : ∀ j < 32,
+      byteAt s.dmem (s.regs.get64 str) (L - 32 + j) = byteAt s.dmem (s.regs.get64 arg) (L - 32 + j)
+  · have hAll : ∀ i < L, byteAt s.dmem (s.regs.get64 str) i = byteAt s.dmem (s.regs.get64 arg) i := by
+      rw [show L = (L - 32) + 32 by omega]
+      exact prefix_ext hpre heq
+    refine vzero_exit h9 h10 h8 hlab H s _ ?_ rfl (fun r' hr' => ?_) (zmms_set_ok ht _)
+    · rw [(chunk_eq_iff s.dmem _ _ (L - 32) 32 256 rfl).mpr heq, pm_self, hTrueL hAll]
+      rfl
+    · simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr'
+      simp only [get64_set64, hr'.2.2, ↓reduceIte]
+      exact ht.2.1 r' (by simp [hr'])
+  · have hne := mt (chunk_eq_iff s.dmem _ _ (L - 32) 32 256 rfl).mp heq
+    have hm := mt (pmovmskb_pcmpeqb _ _).mp hne
+    have hsf : stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂ = false := by
+      refine hFalse (Classical.byContradiction fun hc => heq fun j hj => ?_)
+      exact Classical.byContradiction fun hne' => hc ⟨L - 32 + j, by omega, hne'⟩
+    refine vzero_exit h9 h10 h8 hlab H s _ ?_ rfl (fun r' hr' => ?_) (zmms_set_ok ht _)
+    · simp only [beq_eq_false_iff_ne.mpr hm, hsf]
+    · simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr'
+      simp only [get64_set64, hr'.2.2, ↓reduceIte]
+      exact ht.2.1 r' (by simp [hr'])
+
+theorem avx_loop (h_distinct : [str, arg, n, off, out].Nodup)
+    (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
+    (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
+    (hTrueL : (∀ i < L, byteAt s.dmem A i = byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = true)
+    (hTL : T = L + padBytes L) (h32 : 32 ≤ L) (hL : L < 2 ^ 32) :
+    ∀ rem k (t : MachineData), Frame n off out ymm s t →
+      t.regs.get64 off = .ofNat 64 k → t.regs.get64 n = .ofNat 64 (L - 32) →
+      k + rem = L - 32 → 0 < rem → (∀ i < k, byteAt s.dmem A i = byteAt s.dmem B i) →
+      Program.Loop (stringEqualsProg str arg n off out ymm) H
+        (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
+        ⟨t, Host.addrOf (H.start + 26)⟩ := by
+  have hd := h_distinct
+  simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+  obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
+  have hS' := hS
+  obtain ⟨hA, hB, hT, hsA, hsB, -, hFalse⟩ := hS'
+  subst hA hB
+  intro rem
+  induction rem using Nat.strongRecOn with
+  | _ rem ih =>
+  intro k t ht hoff hn hkr hrem hpre
+  have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
+  have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
+  have hkT : k + 32 ≤ T := by simp only [hTL, padBytes]; omega
   sstep; cont; sstep; rs
-  rw [load_chunk _ _ k 32 T hsA (by omega)]
+  rw [load_chunk _ _ k 32 T hsA hkT]
   simp only []
   cont; sstep; rs
-  rw [load_chunk _ _ k 32 T hsB (by omega)]
+  rw [load_chunk _ _ k 32 T hsB hkT]
   simp only []
   cont; sstep; cont; sstep; rs
   simp only [sw_m1, sub_beq_zero]
@@ -695,38 +749,76 @@ theorem avx (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ l
   · rw [(chunk_eq_iff s.dmem _ _ k 32 256 rfl).mpr heq]
     simp only [pm_self, beq_self_eq_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     cont; sstep; rs
-    simp only [ofNat_add_lit]
+    simp only [ofNat32_add_lit, Nat.add_comm 32 k, sw64_ofNat32 (show k + 32 < 2 ^ 32 by omega)]
     cont; sstep; rs
-    simp only [hn, ofNat32_sub_lit (show 32 ≤ r by omega)]
-    cont; sstep; rs
-    simp only [cf_ofNat32 (show r - 32 < 2 ^ 32 by omega) (show 32 < 2 ^ 32 by decide)]
+    simp only [hn, sw32_ofNat, cf_ofNat32 (show k + 32 < 2 ^ 32 by omega) (show L - 32 < 2 ^ 32 by omega)]
     cont; sstep
-    by_cases hlt : r - 32 < 32
-    · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    by_cases hlt : k + 32 < L - 32
+    · simp only [hlt, decide_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 26) rfl]
       cont
-      exact short h_distinct h_ymm hlab H s _ _ T L hS hTL (k + 32) (r - 32) _ (by frame_tac)
-        (by rs) (by rs) (by omega) (by omega) (by omega) (prefix_ext hpre heq)
-    · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
-        addrOf_label hlab (H := H) (i := 17) rfl]
+      refine ih (L - 32 - (k + 32)) (by omega) (k + 32) _ (by frame_tac) (by rs) (by rs; exact hn)
+        (by omega) (by omega) (prefix_ext hpre heq)
+    · simp only [hlt, decide_false, Bool.false_eq_true, ↓reduceIte]
       cont
-      exact ih (r - 32) (by omega) (k + 32) _ (by frame_tac) (by rs) (by rs) (by omega) (by omega)
-        (by omega) (prefix_ext hpre heq)
+      refine avx_tail h_distinct hlab H s _ _ T L hS hTrueL hTL h32 hL _ (by frame_tac) (by rs; exact hn)
+        fun i hi => (prefix_ext hpre heq) i (by omega)
   · have hne := mt (chunk_eq_iff s.dmem _ _ k 32 256 rfl).mp heq
     have hm := mt (pmovmskb_pcmpeqb _ _).mp hne
     simp only [beq_eq_false_iff_ne.mpr hm, Bool.not_false, ↓reduceIte,
-      addrOf_label hlab (H := H) (i := 43) rfl]
+      addrOf_label hlab (H := H) (i := 40) rfl]
     cont
-    refine ret_false_vzero h9 h10 h8 h_ymm hlab H s _ (hFalse ?_) (by frame_tac)
-    refine Classical.byContradiction fun hc => heq fun j hj => ?_
-    exact Classical.byContradiction fun hne' => hc ⟨k + j, by omega, hne'⟩
-theorem len_done (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base ∈ lowMm)
+    have hsf : stringEquals (s.regs.get64 str) (s.regs.get64 arg) c₁ c₂ d₁ d₂ = false := by
+      refine hFalse (Classical.byContradiction fun hc => heq fun j hj => ?_)
+      exact Classical.byContradiction fun hne' => hc ⟨k + j, by omega, hne'⟩
+    refine vzero_exit h9 h10 h8 hlab H s _ ?_ rfl (fun r' hr' => ?_) (zmms_set_ok ht _)
+    · simp only [hsf]
+    · simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr'
+      simp only [get64_set64, hr'.2.2, ↓reduceIte]
+      exact ht.2.1 r' (by simp [hr'])
+
+theorem avx_entry (h_distinct : [str, arg, n, off, out].Nodup)
     (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
     (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
-    (hTL : T = L + padBytes L) (hL : L < 2 ^ 32) (t : MachineData) (ht : Frame n off out ymm s t)
-    (hn : (t.regs.get64 n).setWidth 32 = .ofNat 32 L) :
+    (hTrueL : (∀ i < L, byteAt s.dmem A i = byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = true)
+    (hTL : T = L + padBytes L) (h32 : 32 ≤ L) (hL : L < 2 ^ 32)
+    (t : MachineData) (ht : Frame n off out ymm s t)
+    (hoff : t.regs.get64 off = 0#64) (hn : t.regs.get64 n = .ofNat 64 L) :
     Program.Loop (stringEqualsProg str arg n off out ymm) H
       (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
-      ⟨t, Host.addrOf (H.start + 13)⟩ := by
+      ⟨t, Host.addrOf (H.start + 23)⟩ := by
+  have hd := h_distinct
+  simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
+  obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
+  have hstr : t.regs.get64 str = s.regs.get64 str := ht.2.1 str (by simp [h2, h3, h4])
+  have harg : t.regs.get64 arg = s.regs.get64 arg := ht.2.1 arg (by simp [h5, h6, h7])
+  sstep; cont; sstep; rs
+  simp only [hn, sw32_ofNat, ofNat32_sub_lit h32,
+    ofNat32_eq_zero (show L - 32 < 2 ^ 32 by omega)]
+  cont; sstep
+  by_cases hL32 : L - 32 = 0
+  · simp only [hL32, beq_self_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 35) rfl]
+    cont
+    refine avx_tail h_distinct hlab H s A B T L hS hTrueL hTL h32 hL _ (by frame_tac) ?_
+      fun i hi => absurd hi (by omega)
+    rs
+    simp [hL32]
+  · simp only [beq_eq_false_iff_ne.mpr hL32, Bool.false_eq_true, ↓reduceIte]
+    cont
+    refine avx_loop h_distinct hlab H s A B T L hS hTrueL hTL h32 hL (L - 32) 0 _ (by frame_tac)
+      (by rs) ?_ (by omega) (by omega) (fun i hi => absurd hi (Nat.not_lt_zero _))
+    rs
+    rw [sw64_ofNat32 (by omega)]
+
+theorem compressed (h_distinct : [str, arg, n, off, out].Nodup)
+    (hlab : LabelsPlaced) (H : Embedding (stringEqualsProg str arg n off out ymm))
+    (s : MachineData) (A B : BitVec 64) (T L : Nat) (hS : Strings s str arg c₁ c₂ d₁ d₂ A B T)
+    (hTrueL : (∀ i < L, byteAt s.dmem A i = byteAt s.dmem B i) → stringEquals A B c₁ c₂ d₁ d₂ = true)
+    (hTL : T = L + padBytes L) (hL0 : 0 < L) (hL : L < 2 ^ 32)
+    (t : MachineData) (ht : Frame n off out ymm s t) (hzm : t.zmms = s.zmms)
+    (hn : t.regs.get64 n = .ofNat 64 L) :
+    Program.Loop (stringEqualsProg str arg n off out ymm) H
+      (StringEqualsPost str arg n off out ymm c₁ c₂ d₁ d₂ s) (fun _ _ => False)
+      ⟨t, Host.addrOf (H.start + 9)⟩ := by
   have hd := h_distinct
   simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, or_false, not_or] at hd
   obtain ⟨⟨h1, h2, h3, h4⟩, ⟨h5, h6, h7⟩, ⟨h8, h9⟩, h10, -⟩ := hd
@@ -736,17 +828,18 @@ theorem len_done (h_distinct : [str, arg, n, off, out].Nodup) (h_ymm : ymm.base 
   sstep; cont; sstep
   intro _
   cont; sstep; rs
-  simp only [BitVec.xor_self, hn, cf_ofNat32 hL (show 32 < 2 ^ 32 by decide)]
+  simp only [hn, sw32_ofNat, BitVec.xor_self, cf_ofNat32 hL (show 32 < 2 ^ 32 by decide)]
   cont; sstep
   by_cases hlt : L < 32
-  · simp only [hlt, decide_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 27) rfl]
+  · simp only [hlt, decide_true, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     cont
-    exact short h_distinct h_ymm hlab H s A B T L hS hTL 0 L _ (by frame_tac) (by rs) (by rs; exact hn)
-      (by omega) hlt (by omega) (fun i hi => absurd hi (Nat.not_lt_zero _))
-  · simp only [hlt, decide_false, Bool.false_eq_true, ↓reduceIte]
+    exact short h_distinct hlab H s A B T L hS hTL hL L 0 _ (by frame_tac) hzm (by rs; exact rfl)
+      (by rs; rw [hn, sw32_ofNat]) hL0 hlt (by omega) (by omega) (fun i hi => absurd hi (Nat.not_lt_zero _))
+  · simp only [hlt, decide_false, Bool.not_false, ↓reduceIte,
+      addrOf_label hlab (H := H) (i := 23) rfl]
     cont
-    exact avx h_distinct h_ymm hlab H s A B T L hS hTL hL L 0 _ (by frame_tac) (by rs) (by rs; exact hn)
-      (by omega) (by omega) (by omega) (fun i hi => absurd hi (Nat.not_lt_zero _))
+    exact avx_entry h_distinct hlab H s A B T L hS hTrueL hTL (by omega) hL _ (by frame_tac)
+      (by rs; exact rfl) (by rs; exact hn)
 /-! ## Facts about the string objects -/
 
 /-- The data of a string followed by its zero padding. -/
@@ -820,6 +913,30 @@ theorem strings_of {s : MachineData} {c : BitVec 32} {d₁ d₂ : List UInt8} {R
     simp [byteAt, dA i hi, dB i hi] at hne
 
 omit [Host] in
+theorem strings_eq_of_L {s : MachineData} {c : BitVec 32} {d₁ d₂ : List UInt8} {R : Mem 64 → Prop}
+    (_hAB : s.regs.get64 str ≠ s.regs.get64 arg)
+    (hmem : (StringAt (s.regs.get64 str) c d₁ ⋆ StringAt (s.regs.get64 arg) c d₂ ⋆ R) s.dmem)
+    (h₁ : d₁.length = strByteLen c) (h₂ : d₂.length = strByteLen c)
+    (h : ∀ i < strByteLen c, byteAt s.dmem (s.regs.get64 str) i = byteAt s.dmem (s.regs.get64 arg) i) :
+    stringEquals (s.regs.get64 str) (s.regs.get64 arg) c c d₁ d₂ = true := by
+  have hL := strByteLen_lt c
+  have hpad : padBytes (strByteLen c) < 8 := by unfold padBytes; omega
+  have dA : ∀ i (hi : i < strByteLen c),
+      s.dmem[s.regs.get64 str + 16#64 + .ofNat 64 i]? = some ((padded d₁)[i]'(by simp [h₁]; omega)) :=
+    fun i hi => sep_get_l hmem (fun _ h => sep_get_l h (stringAt_data _ (by simp [h₁]; omega)))
+  have dB : ∀ i (hi : i < strByteLen c),
+      s.dmem[s.regs.get64 arg + 16#64 + .ofNat 64 i]? = some ((padded d₂)[i]'(by simp [h₂]; omega)) :=
+    fun i hi => sep_get_l hmem (fun _ h => sep_get_r h (stringAt_data _ (by simp [h₂]; omega)))
+  have hd : d₁ = d₂ := by
+    apply List.ext_getElem (by omega)
+    intro i h1 h2
+    have hb := h i (by omega)
+    simp only [byteAt, dA i (by omega), dB i (by omega), Option.getD_some,
+      padded, List.getElem_append_left h1, List.getElem_append_left h2] at hb
+    exact hb
+  simp [stringEquals, hd]
+
+omit [Host] in
 theorem low32_beq {a b : BitVec 64} (ha : a.toNat < 2 ^ 32) (hb : b.toNat < 2 ^ 32) :
     (a.setWidth 32 == b.setWidth 32) = (a == b) := by
   by_cases h : a = b
@@ -852,6 +969,17 @@ theorem shr1 {c : BitVec 32} (h : c.getLsbD 0 = false) :
   rw [strByteLen, ite_eq_right (by rw [h']; exact id)]
   apply BitVec.eq_of_toNat_eq
   rw [BitVec.toNat_ofNat, Nat.mod_eq_of_lt (BitVec.isLt _)]; rfl
+
+omit [Host] in
+theorem shrl1_double_eq {c : BitVec 32} (h : c.getLsbD 0 = true) :
+    c.ushiftRight 1 + c.ushiftRight 1 = BitVec.ofNat 32 (strByteLen c) := by
+  rw [strByteLen, ite_eq_left h]
+  apply BitVec.eq_of_toNat_eq
+  have hlt : (c >>> 1).toNat < 2 ^ 31 := by
+    rw [BitVec.toNat_ushiftRight, Nat.shiftRight_eq_div_pow]; have := c.isLt; omega
+  change ((c >>> 1) + (c >>> 1)).toNat = (BitVec.ofNat 32 (2 * (c >>> 1).toNat)).toNat
+  simp only [BitVec.toNat_add, BitVec.toNat_ofNat]
+  omega
 end
 
 end Proof
@@ -860,13 +988,10 @@ open Proof Std.WP in
 /--
 Correctness theorem: `stringEqualsProg` satisfies its specification on any `Host` program.
 `s₀` is the initial state, which the postcondition refers to.
-`ymm` is VEX-encodable (ymm0–ymm15), which is all ART emits.
 -/
 theorem stringEquals_correct [Host]
     (str arg n off out : Reg64) (ymm : AvxReg .W256)
     (h_distinct : [str, arg, n, off, out].Nodup)
-    (h_ymm : ymm.base ∈ [RegMm.mm0, .mm1, .mm2, .mm3, .mm4, .mm5, .mm6, .mm7, .mm8, .mm9, .mm10,
-      .mm11, .mm12, .mm13, .mm14, .mm15])
     (c₁ c₂ : BitVec 32) (d₁ d₂ : List UInt8)
     (hlab : ∀ i l, Host.prog[i]? = some (.label l) → label l = Host.addrOf i)
     (s₀ : MachineData) :
@@ -889,7 +1014,7 @@ theorem stringEquals_correct [Host]
   sstep; cont; sstep
   simp only [sub_beq_zero, low32_beq hA32 hB32]
   by_cases hAB : s.regs.get64 str = s.regs.get64 arg
-  · simp only [hAB, beq_self_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 40) rfl]
+  · simp only [hAB, beq_self_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 20) rfl]
     cont
     exact ret_true h9 h10 h8 hlab H s _ (by simp [stringEquals, hAB]) rfl (fun _ _ => rfl) (Or.inl rfl)
   simp only [beq_eq_false_iff_ne.mpr hAB, Bool.false_eq_true, ↓reduceIte]
@@ -906,7 +1031,7 @@ theorem stringEquals_correct [Host]
   cont; sstep
   by_cases hc : ¬c₁ = c₂
   · simp only [beq_eq_false_iff_ne.mpr hc, Bool.not_false, ↓reduceIte,
-      addrOf_label hlab (H := H) (i := 45) rfl]
+      addrOf_label hlab (H := H) (i := 43) rfl]
     cont
     refine ret_false h9 h10 h8 hlab H s _ (by simp [stringEquals, hAB, hc]) rfl (fun r hr => ?_)
       (Or.inl rfl)
@@ -918,41 +1043,41 @@ theorem stringEquals_correct [Host]
   simp only [Effects.All]
   have ht : Frame n off out ymm s s := ⟨rfl, fun _ _ => rfl, Or.inl rfl⟩
   have hS := strings_of hAB hmem hl₁ hl₂
+  have hTrueL := fun h => strings_eq_of_L hAB hmem hl₁ hl₂ h
   have hL := strByteLen_lt c₁
   cont; sstep
-  simp only [BitVec.and_self]
   intro _
   cont; sstep
-  by_cases hc0 : c₁ = 0
-  · simp only [hc0, addrOf_label hlab (H := H) (i := 40) rfl]
+  by_cases hc0 : c₁.ushiftRight 1 = 0#32
+  · simp only [hc0, beq_self_eq_true, ↓reduceIte, addrOf_label hlab (H := H) (i := 20) rfl]
     cont
-    have e₁ : d₁ = [] := List.eq_nil_of_length_eq_zero (by rw [hl₁, hc0]; rfl)
-    have e₂ : d₂ = [] := List.eq_nil_of_length_eq_zero (by rw [hl₂, hc0]; rfl)
+    have hlen0 : strByteLen c₁ = 0 := by
+      have htn : (c₁ >>> 1).toNat = 0 := by
+        change (c₁.ushiftRight 1).toNat = 0; rw [hc0]; rfl
+      unfold strByteLen; simp [htn]
+    have e₁ : d₁ = [] := List.eq_nil_of_length_eq_zero (by omega)
+    have e₂ : d₂ = [] := List.eq_nil_of_length_eq_zero (by omega)
     refine ret_true h9 h10 h8 hlab H s _ (by simp [stringEquals, e₁, e₂]) rfl (fun r hr => ?_)
       (Or.inl rfl)
     simp only [List.mem_cons, List.not_mem_nil, or_false, not_or] at hr
     simp [get64_set64, hr.1]
-  simp only [beq_eq_false_iff_ne.mpr (show c₁ ≠ 0#32 from hc0), Bool.false_eq_true, ↓reduceIte]
+  have hL0 : 0 < strByteLen c₁ := by
+    have hne0 : (c₁ >>> 1).toNat ≠ 0 := fun h => hc0 (BitVec.eq_of_toNat_eq (by simpa using h))
+    unfold strByteLen; split <;> omega
+  simp only [beq_eq_false_iff_ne.mpr hc0, Bool.false_eq_true, ↓reduceIte]
   cont; sstep
-  intro _
-  cont; sstep
-  simp only [lsb_and1, Bool.not_not]
   by_cases hbit : c₁.getLsbD 0 = true
-  · simp only [hbit, ↓reduceIte, addrOf_label hlab (H := H) (i := 11) rfl]
-    cont; sstep; cont; sstep
-    intro _
-    cont
-    exact len_done h_distinct h_ymm hlab H s _ _ _ _ hS rfl (by omega) _ (by frame_tac)
-      (by simp [get64_set64, and_m2 hbit])
+  · simp only [hbit, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    cont; sstep; cont
+    refine compressed h_distinct hlab H s _ _ _ _ hS hTrueL rfl hL0 (by omega) _ (by frame_tac) rfl ?_
+    simp only [get64_set64, ↓reduceIte, shrl1_double_eq hbit]
+    exact sw64_ofNat32 (by omega)
   · simp only [Bool.not_eq_true] at hbit
-    simp only [hbit, Bool.false_eq_true, ↓reduceIte]
-    cont; sstep
-    intro _
-    cont; sstep
-    simp only [Int64.ofBitVec_toBitVec, i64_add_sub, addrOf_label hlab (H := H) (i := 13) rfl]
+    simp only [hbit, Bool.not_false, ↓reduceIte, addrOf_label hlab (H := H) (i := 9) rfl]
     cont
-    exact len_done h_distinct h_ymm hlab H s _ _ _ _ hS rfl (by omega) _ (by frame_tac)
-      (by simp only [get64_set64, ↓reduceIte, sw32_64, shr1 hbit])
+    refine compressed h_distinct hlab H s _ _ _ _ hS hTrueL rfl hL0 (by omega) _ (by frame_tac) rfl ?_
+    simp only [get64_set64, ↓reduceIte, shr1 hbit]
+    exact sw64_ofNat32 (by omega)
 
 end
 
